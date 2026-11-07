@@ -716,6 +716,7 @@ function uploadToTelegramVaultBackground(filePath, cacheKey, title, artist, dura
     try {
       if (!force && telegramVault[cacheKey] && telegramVault[cacheKey].fileId) return;
 
+      const oldMessageId = telegramVault[cacheKey]?.messageId;
       const stats = fs.statSync(filePath);
       if (stats.size < 50000 || stats.size > 20 * 1024 * 1024) return;
 
@@ -739,8 +740,11 @@ function uploadToTelegramVaultBackground(filePath, cacheKey, title, artist, dura
       const data = await uploadRes.json();
       if (data.ok && data.result?.audio?.file_id) {
         const fileId = data.result.audio.file_id;
+        const newMessageId = data.result.message_id;
+
         telegramVault[cacheKey] = {
           fileId,
+          messageId: newMessageId,
           title: title || '',
           artist: artist || '',
           duration: duration || 0,
@@ -748,7 +752,25 @@ function uploadToTelegramVaultBackground(filePath, cacheKey, title, artist, dura
           savedAt: Date.now()
         };
         saveTelegramVault();
-        console.log(`☁️ [TelegramVault] 🚀 Uploaded & Saved to Vault: "${title}" (file_id: ${fileId.slice(0, 16)}...)`);
+        console.log(`☁️ [TelegramVault] 🚀 Uploaded & Saved to Vault: "${title}" (file_id: ${fileId.slice(0, 16)}..., msg: ${newMessageId})`);
+
+        // If replacing a faulty track and oldMessageId exists, delete old faulty copy from Telegram channel
+        if (oldMessageId && oldMessageId !== newMessageId) {
+          try {
+            await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: TELEGRAM_VAULT_CHAT_ID,
+                message_id: oldMessageId
+              }),
+              signal: AbortSignal.timeout(10000)
+            });
+            console.log(`☁️ [TelegramVault] 🗑️ Deleted old faulty copy (message_id: ${oldMessageId}) from Telegram Vault channel.`);
+          } catch (delErr) {
+            console.warn(`[TelegramVault] Note: could not delete old message ${oldMessageId}:`, delErr.message);
+          }
+        }
       }
     } catch (err) {
       console.warn(`[TelegramVault] Background upload warning for "${title}":`, err.message);
