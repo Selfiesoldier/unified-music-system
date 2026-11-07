@@ -10,6 +10,7 @@ import http from 'http';
 
 import { PersistentStreamManager } from './src/persistentStreamManager.js';
 import { AudioPlayer } from './src/audioPlayer.js';
+import { is96kCbrMp3Buffer } from './src/mp3Validator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -218,6 +219,11 @@ app.post(['/announce', '/api/announce'], requireSecret, async (req, res) => {
 
     if (!mp3Buffer || mp3Buffer.length === 0) {
       return res.json({ status: 'cancelled' });
+    }
+
+    if (!is96kCbrMp3Buffer(mp3Buffer)) {
+      console.warn('❌ [Announcement] Rejected: payload failed 96k CBR MP3 byte-header check.');
+      return res.status(400).json({ error: 'Rejected: audio must be strict 96kbps CBR 44.1kHz MP3' });
     }
 
     const durationMs = Math.round((mp3Buffer.length / 12000) * 1000);

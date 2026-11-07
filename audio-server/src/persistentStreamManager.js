@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { is96kCbrMp3Buffer } from './mp3Validator.js';
 
 const CHUNK_SIZE = 1200; // 100ms at 96kbps CBR (12000 bytes/sec * 0.1 = 1200 bytes)
 const MAX_BURST_BYTES = 12 * 1024; // 12 KB = ~1.02 seconds of 96kbps MP3 audio
@@ -283,27 +284,8 @@ export class PersistentStreamManager {
   async normalizeAudioTo96kMp3(inputBuffer) {
     if (!inputBuffer || inputBuffer.length === 0) return null;
 
-    // Fast check: verify if already 96k CBR 44100Hz Stereo MP3
-    let syncOffset = -1;
-    for (let i = 0; i < Math.min(inputBuffer.length - 4, 2048); i++) {
-      if (inputBuffer[i] === 0xFF && (inputBuffer[i + 1] & 0xE0) === 0xE0) {
-        syncOffset = i;
-        break;
-      }
-    }
-    if (syncOffset >= 0 && syncOffset + 4 <= inputBuffer.length) {
-      const b1 = inputBuffer[syncOffset + 1];
-      const b2 = inputBuffer[syncOffset + 2];
-      const b3 = inputBuffer[syncOffset + 3];
-      const mpegVersion = (b1 >> 3) & 3; // 3 = MPEG-1
-      const layer = (b1 >> 1) & 3; // 1 = Layer 3
-      const bitrateIdx = (b2 >> 4) & 15; // 8 = 96k
-      const sampleRateIdx = (b2 >> 2) & 3; // 0 = 44100Hz
-      const channelMode = (b3 >> 6) & 3; // 3 = Mono
-
-      if (mpegVersion === 3 && layer === 1 && bitrateIdx === 8 && sampleRateIdx === 0 && channelMode !== 3) {
-        return inputBuffer; // Already strict 96k CBR 44100Hz Stereo MP3!
-      }
+    if (is96kCbrMp3Buffer(inputBuffer)) {
+      return inputBuffer;
     }
 
     console.error('❌ [StreamManager] Strict Zero-Load: Received non-96k MP3 announcement. Speech normalization must be performed upstream. Refusing playback.');
@@ -313,12 +295,13 @@ export class PersistentStreamManager {
   async streamAnnouncementMp3(mp3Buffer, sessionId) {
     if (!mp3Buffer || mp3Buffer.length === 0) return true;
 
-    // 1. Verify speech is exact 96k CBR 44.1kHz stereo MP3
-    const normalizedBuffer = await this.normalizeAudioTo96kMp3(mp3Buffer);
-    if (!normalizedBuffer) {
+    // Guard input with is96kCbrMp3Buffer - speech must be exact 96k CBR 44.1kHz MP3
+    if (!is96kCbrMp3Buffer(mp3Buffer)) {
       console.warn('⚠️ [StreamManager] Announcement aborted: audio buffer failed 96k CBR MP3 validation.');
       return false;
     }
+
+    const normalizedBuffer = mp3Buffer;
     const expectedSession = sessionId !== null ? sessionId : this.announcementSessionId;
     if (this.announcementSessionId !== expectedSession) return false;
 
