@@ -15,8 +15,15 @@
    - **Legacy / Unencoded Vault Repair:** If an older song from Telegram Cloud Vault or local SSD cache is detected as non-96k (e.g. legacy 128kbps or M4A), Central Controller offloads it to Cloud Worker's `/transcode` endpoint via POST. Worker transcodes it to 96kbps CBR MP3, Controller caches the repaired file, permanently upgrades the Telegram Cloud Vault entry, and serves it seamlessly.
 
 ## Live Production Verification Evidence
-- **Audio Server 1 (`92.118.206.166:30238`):** Running pure byte relay with 0% CPU, 0 FFmpeg processes.
-- **Audio Server 2 (`2.56.246.128:30289`):** Live verified playing *Noor, Khan, Madhurxo - Aarzu (Official Music Video)* with zero rejections (100+ seconds streaming).
-- **Central Controller (`2.56.246.119:30195`):** Healthy with 0 child processes, active auto-repair offload to Cloud Worker.
+- **Audio Server 1 (`92.118.206.166:30238`):** Running pure byte relay with 0.89% CPU, 41 MB RAM, 0 FFmpeg processes. Actively streaming live.
+- **Audio Server 2 (`2.56.246.128:30289`):** Running pure byte relay with 0.72% CPU, 30 MB RAM, 0 FFmpeg processes. Gapless silence feed active.
+- **Central Controller (`2.56.246.119:30195`):** Healthy with 1.1% CPU, 119 MB RAM, 0 child processes, active auto-repair offload.
+- **Highrise Bot Container (`bf9ef46f`):** Running on Node DE-04 with 0.10% CPU, 48 MB RAM, ~13 hours uptime. Autoplay loop active.
 - **Cloud Worker (`92.118.206.201:30229`):** Live verified `/transcode` (POST binary audio -> 96kbps CBR 44.1kHz MP3) in ~1.5s.
-- **Termux Residential Bridge:** Live verified `/tts` returning compliant 96kbps CBR MP3.
+- **Termux Residential Bridge:** Live verified `/tts` returning compliant 96kbps CBR MP3. Reconnection supervisor & auto-respawn hardened.
+
+## Fleet 24/7 Autoplay Hardening (Complete ✅)
+1. **Cache Pruner Immunity:** `pruneSongCache()` protects active songs, queued songs, and `.json` metadata via `getSongCacheKey()` and `yt_<videoId>`.
+2. **Atomic Vault Durability:** `telegram_vault.json` writes atomically via `.tmp` and maintains a `.bak` backup with automatic corrupt recovery.
+3. **Resilient Bridge Tunneling:** `residential/manager.js` auto-updates registered bridge URL on Cloudflare edge change and restarts dead tunnels in 5s.
+4. **MPEG Frame 0 Sync Alignment:** Streams start directly on audio sync word `0xFF 0xFB`, completely skipping ID3v2 headers and padding.
