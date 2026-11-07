@@ -97,18 +97,18 @@ export class PersistentStreamManager {
       }
 
       while (silenceChunksSent < targetChunks) {
+        const sourceBuffer = (this.silenceMp3Buffer && this.silenceMp3Buffer.length >= CHUNK_SIZE)
+          ? this.silenceMp3Buffer
+          : Buffer.from(FALLBACK_SILENCE_B64, 'base64');
+
         let chunk;
-        if (this.silenceMp3Buffer && this.silenceMp3Buffer.length >= CHUNK_SIZE) {
-          if (silenceOffset + CHUNK_SIZE <= this.silenceMp3Buffer.length) {
-            chunk = this.silenceMp3Buffer.subarray(silenceOffset, silenceOffset + CHUNK_SIZE);
-            silenceOffset += CHUNK_SIZE;
-          } else {
-            silenceOffset = 0;
-            chunk = this.silenceMp3Buffer.subarray(0, CHUNK_SIZE);
-            silenceOffset += CHUNK_SIZE;
-          }
+        if (silenceOffset + CHUNK_SIZE <= sourceBuffer.length) {
+          chunk = sourceBuffer.subarray(silenceOffset, silenceOffset + CHUNK_SIZE);
+          silenceOffset += CHUNK_SIZE;
         } else {
-          chunk = Buffer.from(FALLBACK_SILENCE_B64, 'base64').subarray(0, CHUNK_SIZE);
+          silenceOffset = 0;
+          chunk = sourceBuffer.subarray(0, CHUNK_SIZE);
+          silenceOffset += CHUNK_SIZE;
         }
 
         this.broadcast(chunk);
@@ -139,7 +139,7 @@ export class PersistentStreamManager {
     if (!chunk || chunk.length === 0) return;
     this.stats.totalBytes += chunk.length;
 
-    // Maintain byte-accurate 64 KB rolling burst buffer (exactly ~5.3s of 96kbps MP3 audio)
+    // Maintain byte-accurate 12 KB rolling burst buffer (exactly ~1.02s of 96kbps MP3 audio)
     this.audioBuffer.push(chunk);
     this.audioBufferBytes += chunk.length;
     while (this.audioBufferBytes > this.maxBurstBytes && this.audioBuffer.length > 1) {
