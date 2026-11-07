@@ -1,14 +1,15 @@
 import fs from 'fs';
 
 /**
- * Pure Node.js MPEG-1 Layer 3 96kbps CBR 44.1kHz Audio Header Validator
+ * Pure Node.js MPEG-1 Layer 3 96kbps CBR (44.1kHz / 48kHz) Audio Header Validator
  * Zero external dependencies, zero child_process invocations.
  */
 
 /**
- * Checks whether a Buffer conforms to MPEG-1 Layer 3, 96 kbps CBR, 44.1 kHz, non-mono format.
+ * Checks whether a Buffer conforms to MPEG-1 Layer 3, 96 kbps CBR, 44.1/48 kHz, non-mono format.
  * Inspects ID3v2 tags (if present) to find frame offset, verifies first frame header parameters,
  * and validates second frame sync when sufficient bytes are available.
+ * Both 44.1kHz and 48kHz at 96kbps CBR stream at exactly 12,000 bytes/sec (1,200 bytes per 100ms).
  *
  * @param {Buffer} buffer - Audio data buffer
  * @returns {boolean} True if buffer is valid 96k CBR MP3 audio
@@ -81,9 +82,10 @@ export function is96kCbrMp3Buffer(buffer) {
     return false;
   }
 
-  // Sample Rate Index: 0 = 44.1 kHz
+  // Sample Rate Index: 0 = 44.1 kHz, 1 = 48.0 kHz
+  // Both 44.1kHz and 48kHz at 96kbps stream at the exact same constant byte throughput: 12,000 bytes/sec
   const sampleRateIdx = (b2 >> 2) & 3;
-  if (sampleRateIdx !== 0) {
+  if (sampleRateIdx !== 0 && sampleRateIdx !== 1) {
     return false;
   }
 
@@ -95,8 +97,9 @@ export function is96kCbrMp3Buffer(buffer) {
   }
 
   // Frame length calculation: Math.floor(144 * bitrate / sampleRate) + padding
+  const sampleRate = sampleRateIdx === 0 ? 44100 : 48000;
   const padding = (b2 >> 1) & 1;
-  const frameLength = Math.floor((144 * 96000) / 44100) + padding; // 313 or 314 bytes
+  const frameLength = Math.floor((144 * 96000) / sampleRate) + padding; // 313/314 bytes for 44.1k, 288 bytes for 48k
 
   // Confirm next frame sync if buffer contains enough bytes
   const nextSync = syncOffset + frameLength;
@@ -109,7 +112,7 @@ export function is96kCbrMp3Buffer(buffer) {
     if (((nb1 >> 3) & 3) !== 3) return false; // MPEG-1
     if (((nb1 >> 1) & 3) !== 1) return false; // Layer III
     if (((nb2 >> 4) & 15) !== 7) return false; // 96 kbps
-    if (((nb2 >> 2) & 3) !== 0) return false;  // 44.1 kHz
+    if (((nb2 >> 2) & 3) !== sampleRateIdx) return false;  // Same sample rate
   }
 
   return true;
@@ -129,7 +132,7 @@ export function validateMp3FileHeader(filePath) {
     }
 
     const stat = fs.statSync(filePath);
-    if (stat.size < 313) {
+    if (stat.size < 288) {
       return false;
     }
 

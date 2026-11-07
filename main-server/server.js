@@ -9,7 +9,7 @@ import { fileURLToPath } from 'url';
 import fetch from 'node-fetch';
 import * as googleTTS from 'google-tts-api';
 import yts from 'yt-search';
-import { is96kCbrMp3Buffer } from './src/mp3Validator.js';
+import { is96kCbrMp3Buffer, validateMp3FileHeader } from './src/mp3Validator.js';
 
 // ==========================================
 // 🔎 IN-MEMORY YTS SEARCH CACHE (10 min TTL)
@@ -708,56 +708,13 @@ async function getTelegramDirectFileUrl(fileId) {
   return null;
 }
 
-async function fetchAndSaveTelegramFile(directUrl, cacheKey, track) {
-  try {
-    const resp = await fetch(directUrl, { signal: AbortSignal.timeout(30000) });
-    if (!resp.ok) return null;
-
-    const persistentFile = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
-    const tempFile = path.join(CACHE_DIR, `temp_${Date.now()}_tg.mp3`);
-
-    const fileStream = fs.createWriteStream(tempFile);
-    await new Promise((resolve, reject) => {
-      resp.body.pipe(fileStream);
-      resp.body.on('error', reject);
-      fileStream.on('finish', resolve);
-      fileStream.on('error', reject);
-    });
-
-    const st = fs.statSync(tempFile);
-    if (st.size > 50000) {
-      try {
-        fs.renameSync(tempFile, persistentFile);
-        const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
-        fs.writeFileSync(jsonFile, JSON.stringify({
-          title: track.title,
-          artist: track.metadata?.artist || 'Unknown Artist',
-          duration: track.metadata?.duration || 'Unknown',
-          durationSeconds: track.metadata?.durationSeconds || track.metadata?.seconds || 0,
-          videoId: track.metadata?.videoId || '',
-          source: 'Telegram Cloud Vault (L2 Cache)',
-          format: 'mp3'
-        }, null, 2));
-        pruneSongCache();
-        return persistentFile;
-      } catch (_) {
-        return tempFile;
-      }
-    }
-    try { fs.unlinkSync(tempFile); } catch (_) {}
-  } catch (err) {
-    console.warn(`[TelegramVault] Download error:`, err.message);
-  }
-  return null;
-}
-
-function uploadToTelegramVaultBackground(filePath, cacheKey, title, artist, duration) {
+function uploadToTelegramVaultBackground(filePath, cacheKey, title, artist, duration, force = false) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_VAULT_CHAT_ID) return;
   if (!fs.existsSync(filePath)) return;
 
   setImmediate(async () => {
     try {
-      if (telegramVault[cacheKey] && telegramVault[cacheKey].fileId) return;
+      if (!force && telegramVault[cacheKey] && telegramVault[cacheKey].fileId) return;
 
       const stats = fs.statSync(filePath);
       if (stats.size < 50000 || stats.size > 20 * 1024 * 1024) return;
@@ -799,11 +756,124 @@ function uploadToTelegramVaultBackground(filePath, cacheKey, title, artist, dura
   });
 }
 
+/**
+ * Offloads audio repair/normalization to Cloud Download Worker's FFmpeg.
+ * Controller remains 100% FFmpeg-free (0 child processes, 0 FFmpeg binaries).
+ */
+async function transcodeViaWorker(sourceFilePath, cacheKey, title, artist, durationSeconds = 0) {
+  if (!DOWNLOAD_WORKER_URL) {
+    console.warn('⚠️ [WorkerTranscode] Cannot transcode: DOWNLOAD_WORKER_URL is not configured');
+    return null;
+  }
+  try {
+    console.log(`🔄 [WorkerTranscode] Offloading repair transcode for "${title || cacheKey}" to Cloud Worker (${DOWNLOAD_WORKER_URL}/transcode)...`);
+    const fileBuf = await fs.promises.readFile(sourceFilePath);
+    const transRes = await fetch(`${DOWNLOAD_WORKER_URL}/transcode`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: fileBuf,
+      signal: AbortSignal.timeout(60000)
+    });
+
+    if (!transRes.ok) {
+      console.warn(`⚠️ [WorkerTranscode] Cloud Worker returned HTTP ${transRes.status}`);
+      return null;
+    }
+
+    const transArray = await transRes.arrayBuffer();
+    const transBuf = Buffer.from(transArray);
+
+    if (transBuf.length > 5000 && is96kCbrMp3Buffer(transBuf)) {
+      const persistentMp3 = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
+      fs.writeFileSync(persistentMp3, transBuf);
+      console.log(`✅ [WorkerTranscode] Successfully repaired & cached 96k CBR MP3 for "${title || cacheKey}" (${(transBuf.length / 1024 / 1024).toFixed(2)} MB)!`);
+
+      // If legacy .m4a was present, delete it
+      const legacyM4a = path.join(CACHE_DIR, `song_${cacheKey}.m4a`);
+      try { if (fs.existsSync(legacyM4a)) fs.unlinkSync(legacyM4a); } catch (_) {}
+
+      // Write metadata json
+      const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
+      fs.writeFileSync(jsonFile, JSON.stringify({
+        title: title || 'Repaired Track',
+        artist: artist || 'Unknown Artist',
+        durationSeconds: durationSeconds || 0,
+        source: 'Cloud Worker 96k Transcode Repair',
+        format: 'mp3'
+      }, null, 2));
+
+      // Overwrite/upgrade Telegram Cloud Vault with the clean 96k CBR MP3
+      uploadToTelegramVaultBackground(persistentMp3, cacheKey, title, artist, durationSeconds, true);
+
+      pruneSongCache();
+      return persistentMp3;
+    } else {
+      console.warn(`⚠️ [WorkerTranscode] Output from Worker was invalid or not 96k CBR MP3`);
+    }
+  } catch (err) {
+    console.warn(`⚠️ [WorkerTranscode] Repair transcode failed:`, err.message);
+  }
+  return null;
+}
+
+async function fetchAndSaveTelegramFile(directUrl, cacheKey, track) {
+  try {
+    const resp = await fetch(directUrl, { signal: AbortSignal.timeout(30000) });
+    if (!resp.ok) return null;
+
+    const persistentFile = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
+    const tempFile = path.join(CACHE_DIR, `temp_${Date.now()}_tg.mp3`);
+
+    const fileStream = fs.createWriteStream(tempFile);
+    await new Promise((resolve, reject) => {
+      resp.body.pipe(fileStream);
+      resp.body.on('error', reject);
+      fileStream.on('finish', resolve);
+      fileStream.on('error', reject);
+    });
+
+    const st = fs.statSync(tempFile);
+    if (st.size > 50000) {
+      const durationSec = track.metadata?.durationSeconds || track.metadata?.seconds || 0;
+      if (validateMp3FileHeader(tempFile)) {
+        try {
+          fs.renameSync(tempFile, persistentFile);
+          const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
+          fs.writeFileSync(jsonFile, JSON.stringify({
+            title: track.title,
+            artist: track.metadata?.artist || 'Unknown Artist',
+            duration: track.metadata?.duration || 'Unknown',
+            durationSeconds: durationSec,
+            videoId: track.metadata?.videoId || '',
+            source: 'Telegram Cloud Vault (L2 Cache)',
+            format: 'mp3'
+          }, null, 2));
+          pruneSongCache();
+          return persistentFile;
+        } catch (_) {
+          return tempFile;
+        }
+      } else {
+        console.warn(`⚠️ [TelegramVault] Song "${track.title}" from Vault is NOT 96k CBR MP3 (legacy upload). Offloading repair transcode to Worker...`);
+        const fixedFile = await transcodeViaWorker(tempFile, cacheKey, track.title, track.metadata?.artist, durationSec);
+        try { fs.unlinkSync(tempFile); } catch (_) {}
+        if (fixedFile) return fixedFile;
+      }
+    }
+    try { fs.unlinkSync(tempFile); } catch (_) {}
+  } catch (err) {
+    console.warn(`[TelegramVault] Download error:`, err.message);
+  }
+  return null;
+}
+
 async function downloadTrackToFile(track) {
   const rawTitle = track.title || track.metadata?.title || '';
   const cacheKey = getSongCacheKey(track.url, rawTitle);
   const mp3File = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
   const m4aFile = path.join(CACHE_DIR, `song_${cacheKey}.m4a`);
+  const artist = track.metadata?.artist || '';
+  const durationSeconds = track.metadata?.durationSeconds || track.metadata?.seconds || 0;
 
   // 1. Instant Cache Hit (preferring ready .mp3, then legacy .m4a)
   for (const candidate of [mp3File, m4aFile]) {
@@ -811,8 +881,14 @@ async function downloadTrackToFile(track) {
       try {
         const stats = fs.statSync(candidate);
         if (stats.size > 50000) {
-          console.log(`⚡ [SongCache] Instant Cache Hit for "${rawTitle}" (${(stats.size / 1024 / 1024).toFixed(2)} MB, ${path.extname(candidate)})!`);
-          return candidate;
+          if (validateMp3FileHeader(candidate)) {
+            console.log(`⚡ [SongCache] Instant Cache Hit for "${rawTitle}" (${(stats.size / 1024 / 1024).toFixed(2)} MB, valid 96k CBR MP3)!`);
+            return candidate;
+          } else {
+            console.warn(`⚠️ [SongCache] Cached file "${candidate}" is not 96k CBR MP3. Offloading repair transcode to Worker...`);
+            const fixedFile = await transcodeViaWorker(candidate, cacheKey, rawTitle, artist, durationSeconds);
+            if (fixedFile) return fixedFile;
+          }
         }
       } catch (_) {}
     }
@@ -867,9 +943,6 @@ async function downloadTrackToFile(track) {
   if (!DOWNLOAD_WORKER_URL && !activeResidentialBridgeUrl) {
     return track.url;
   }
-
-  const artist = track.metadata?.artist || '';
-  const durationSeconds = track.metadata?.durationSeconds || track.metadata?.seconds || 0;
 
   let cleanSearch = '';
   if (track.requestedQuery && typeof track.requestedQuery === 'string' && !track.requestedQuery.startsWith('http')) {
@@ -934,25 +1007,32 @@ async function downloadTrackToFile(track) {
 
     const st = fs.statSync(tempFile);
     if (st.size > 50000) {
-      try {
-        fs.renameSync(tempFile, persistentFile);
-        const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
-        fs.writeFileSync(jsonFile, JSON.stringify({
-          title: track.title,
-          artist: track.metadata?.artist || 'Unknown Artist',
-          duration: track.metadata?.duration || 'Unknown',
-          durationSeconds: durationSeconds,
-          videoId: track.metadata?.videoId || '',
-          source: activeServiceName,
-          format: isMp3 ? 'mp3' : 'm4a'
-        }, null, 2));
-        console.log(`✅ [DownloadRouter] Successfully downloaded & cached via ${activeServiceName}: "${rawTitle}" (${(st.size / 1024 / 1024).toFixed(2)} MB, ${ext})`);
-        uploadToTelegramVaultBackground(persistentFile, cacheKey, track.title || rawTitle, artist, durationSeconds);
-        pruneSongCache();
-        return persistentFile;
-      } catch (e) {
-        uploadToTelegramVaultBackground(tempFile, cacheKey, track.title || rawTitle, artist, durationSeconds);
-        return tempFile;
+      if (validateMp3FileHeader(tempFile)) {
+        try {
+          fs.renameSync(tempFile, persistentFile);
+          const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
+          fs.writeFileSync(jsonFile, JSON.stringify({
+            title: track.title,
+            artist: track.metadata?.artist || 'Unknown Artist',
+            duration: track.metadata?.duration || 'Unknown',
+            durationSeconds: durationSeconds,
+            videoId: track.metadata?.videoId || '',
+            source: activeServiceName,
+            format: 'mp3'
+          }, null, 2));
+          console.log(`✅ [DownloadRouter] Successfully downloaded & cached via ${activeServiceName}: "${rawTitle}" (${(st.size / 1024 / 1024).toFixed(2)} MB, 96k CBR MP3)`);
+          uploadToTelegramVaultBackground(persistentFile, cacheKey, track.title || rawTitle, artist, durationSeconds);
+          pruneSongCache();
+          return persistentFile;
+        } catch (e) {
+          uploadToTelegramVaultBackground(tempFile, cacheKey, track.title || rawTitle, artist, durationSeconds);
+          return tempFile;
+        }
+      } else {
+        console.warn(`⚠️ [DownloadRouter] Stream from ${activeServiceName} was not valid 96k CBR MP3. Offloading repair transcode to Worker...`);
+        const fixedFile = await transcodeViaWorker(tempFile, cacheKey, rawTitle, artist, durationSeconds);
+        try { fs.unlinkSync(tempFile); } catch (_) {}
+        if (fixedFile) return fixedFile;
       }
     } else {
       try { fs.unlinkSync(tempFile); } catch (_) {}
