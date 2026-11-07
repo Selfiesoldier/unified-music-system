@@ -316,6 +316,29 @@ export class PersistentStreamManager {
     const TARGET_LEAD_MS = 200;
     const chunkSize = 1200; // 100ms at 96kbps
     let offset = 0;
+
+    // Skip ID3 tag and align directly to first MPEG sync word
+    if (
+      normalizedBuffer.length >= 10 &&
+      normalizedBuffer[0] === 0x49 && // 'I'
+      normalizedBuffer[1] === 0x44 && // 'D'
+      normalizedBuffer[2] === 0x33    // '3'
+    ) {
+      const tagSize =
+        ((normalizedBuffer[6] & 0x7F) << 21) |
+        ((normalizedBuffer[7] & 0x7F) << 14) |
+        ((normalizedBuffer[8] & 0x7F) << 7) |
+        (normalizedBuffer[9] & 0x7F);
+      const hasFooter = (normalizedBuffer[5] & 0x10) !== 0;
+      offset = 10 + tagSize + (hasFooter ? 10 : 0);
+    }
+    for (let i = offset; i < Math.min(normalizedBuffer.length - 1, offset + 4096); i++) {
+      if (normalizedBuffer[i] === 0xFF && (normalizedBuffer[i + 1] & 0xE0) === 0xE0) {
+        offset = i;
+        break;
+      }
+    }
+
     const startTime = Date.now();
 
     try {

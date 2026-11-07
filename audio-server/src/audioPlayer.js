@@ -184,14 +184,28 @@ export class AudioPlayer extends EventEmitter {
     this.currentFd = fd;
     const readBuffer = Buffer.allocUnsafe(CHUNK_SIZE);
     let fileOffset = 0;
-    // Skip ID3v2 metadata header if present to start directly on audio frame 0
+    // Skip ID3v2 metadata header if present and scan forward to align on first MPEG sync word
     try {
-      const id3Header = Buffer.alloc(10);
-      const readCount = fs.readSync(fd, id3Header, 0, 10, 0);
-      if (readCount >= 10 && id3Header.subarray(0, 3).toString('ascii') === 'ID3') {
-        const tagSize = ((id3Header[6] & 0x7F) << 21) | ((id3Header[7] & 0x7F) << 14) | ((id3Header[8] & 0x7F) << 7) | (id3Header[9] & 0x7F);
-        fileOffset = 10 + tagSize;
-        console.log(`⏩ [AudioPlayer] Skipped ID3v2 header (${fileOffset} bytes), starting on audio frame 0`);
+      const probeHeader = Buffer.alloc(10);
+      const readCount = fs.readSync(fd, probeHeader, 0, 10, 0);
+      if (readCount >= 10 && probeHeader.subarray(0, 3).toString('ascii') === 'ID3') {
+        const tagSize = ((probeHeader[6] & 0x7F) << 21) | ((probeHeader[7] & 0x7F) << 14) | ((probeHeader[8] & 0x7F) << 7) | (probeHeader[9] & 0x7F);
+        const hasFooter = (probeHeader[5] & 0x10) !== 0;
+        fileOffset = 10 + tagSize + (hasFooter ? 10 : 0);
+        console.log(`⏩ [AudioPlayer] Skipped ID3v2 header (${fileOffset} bytes), scanning for audio frame 0`);
+      }
+      // Scan forward to ensure fileOffset lands exactly on 0xFF 0xEx
+      const scanLimit = 4096;
+      const scanBuf = Buffer.alloc(scanLimit);
+      const scanCount = fs.readSync(fd, scanBuf, 0, scanLimit, fileOffset);
+      for (let i = 0; i < scanCount - 1; i++) {
+        if (scanBuf[i] === 0xFF && (scanBuf[i + 1] & 0xE0) === 0xE0) {
+          if (i > 0) {
+            fileOffset += i;
+            console.log(`🎯 [AudioPlayer] Synced precisely to audio frame 0 at offset ${fileOffset}`);
+          }
+          break;
+        }
       }
     } catch (_) {}
     const hrStart = process.hrtime.bigint();

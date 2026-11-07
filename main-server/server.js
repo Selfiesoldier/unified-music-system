@@ -81,6 +81,42 @@ if (!fs.existsSync(CACHE_DIR)) {
 const CACHE_MAX_SONGS = parseInt(process.env.CACHE_MAX_SONGS || '10', 10);
 const CACHE_MAX_TTS = parseInt(process.env.CACHE_MAX_TTS || '10', 10);
 
+function addTrackToActiveSet(track, activeFiles) {
+  if (!track) return;
+  const rawTitle = track.title || track.metadata?.title || '';
+  const url = track.url || '';
+
+  // 1. Direct match if url contains song_ or custom_
+  const m = url.match(/(song_[a-zA-Z0-9_.-]+|custom_[a-zA-Z0-9_.-]+)/);
+  if (m) {
+    const base = m[1].replace(/\.(mp3|m4a|json)$/, '');
+    activeFiles.add(base);
+    activeFiles.add(`${base}.mp3`);
+    activeFiles.add(`${base}.m4a`);
+    activeFiles.add(`${base}.json`);
+  }
+
+  // 2. Computed getSongCacheKey
+  try {
+    const cacheKey = getSongCacheKey(url, rawTitle);
+    if (cacheKey) {
+      activeFiles.add(`song_${cacheKey}`);
+      activeFiles.add(`song_${cacheKey}.mp3`);
+      activeFiles.add(`song_${cacheKey}.m4a`);
+      activeFiles.add(`song_${cacheKey}.json`);
+    }
+  } catch (_) {}
+
+  // 3. YouTube video ID directly
+  const ytMatch = url.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
+  if (ytMatch) {
+    activeFiles.add(`song_yt_${ytMatch[1]}`);
+    activeFiles.add(`song_yt_${ytMatch[1]}.mp3`);
+    activeFiles.add(`song_yt_${ytMatch[1]}.m4a`);
+    activeFiles.add(`song_yt_${ytMatch[1]}.json`);
+  }
+}
+
 function pruneSongCache() {
   try {
     if (!fs.existsSync(CACHE_DIR)) return;
@@ -90,15 +126,11 @@ function pruneSongCache() {
     const activeFiles = new Set();
     if (typeof rooms !== 'undefined') {
       for (const r of Object.values(rooms)) {
-        if (r && r.currentTrack && r.currentTrack.url) {
-          const m = r.currentTrack.url.match(/(song_[a-zA-Z0-9_.-]+|custom_[a-zA-Z0-9_.-]+)/);
-          if (m) activeFiles.add(m[1]);
+        if (r && r.currentTrack) {
+          addTrackToActiveSet(r.currentTrack, activeFiles);
         }
         for (const q of (r?.queue || [])) {
-          if (q && q.url) {
-            const m = q.url.match(/(song_[a-zA-Z0-9_.-]+|custom_[a-zA-Z0-9_.-]+)/);
-            if (m) activeFiles.add(m[1]);
-          }
+          addTrackToActiveSet(q, activeFiles);
         }
       }
     }
@@ -123,7 +155,7 @@ function pruneSongCache() {
       }
 
       // Don't evict currently playing or queued songs
-      if (activeFiles.has(f)) {
+      if (activeFiles.has(f) || activeFiles.has(f.replace(/\.(mp3|m4a|json)$/, ''))) {
         continue;
       }
 
@@ -673,20 +705,45 @@ function getSongCacheKey(url, title = '') {
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '9109239162:AAE01QXTy4LhP5o6MvJ7DUYL_4kzBbSp5k4';
 const TELEGRAM_VAULT_CHAT_ID = process.env.TELEGRAM_VAULT_CHAT_ID || '-1004463400168';
 const VAULT_FILE = path.join(CACHE_DIR, 'telegram_vault.json');
+const VAULT_BAK_FILE = path.join(CACHE_DIR, 'telegram_vault.json.bak');
 
 let telegramVault = {};
 try {
   if (fs.existsSync(VAULT_FILE)) {
     telegramVault = JSON.parse(fs.readFileSync(VAULT_FILE, 'utf8'));
     console.log(`☁️ [TelegramVault] Loaded ${Object.keys(telegramVault).length} songs from vault index.`);
+  } else if (fs.existsSync(VAULT_BAK_FILE)) {
+    telegramVault = JSON.parse(fs.readFileSync(VAULT_BAK_FILE, 'utf8'));
+    console.log(`☁️ [TelegramVault] Primary missing, loaded ${Object.keys(telegramVault).length} songs from backup vault.`);
   }
-} catch (_) {
-  telegramVault = {};
+} catch (loadErr) {
+  console.warn(`⚠️ [TelegramVault] Primary vault corrupt (${loadErr.message}), attempting backup recovery...`);
+  try {
+    if (fs.existsSync(VAULT_BAK_FILE)) {
+      telegramVault = JSON.parse(fs.readFileSync(VAULT_BAK_FILE, 'utf8'));
+      console.log(`✅ [TelegramVault] Successfully recovered ${Object.keys(telegramVault).length} songs from backup vault.`);
+    } else {
+      telegramVault = {};
+    }
+  } catch (_) {
+    telegramVault = {};
+  }
 }
 
 function saveTelegramVault() {
   try {
-    fs.writeFileSync(VAULT_FILE, JSON.stringify(telegramVault, null, 2));
+    const tempFile = `${VAULT_FILE}.tmp`;
+    const data = JSON.stringify(telegramVault, null, 2);
+    // Write atomically to temporary file first
+    fs.writeFileSync(tempFile, data, 'utf8');
+    // Maintain rolling backup of known valid state
+    if (fs.existsSync(VAULT_FILE)) {
+      try {
+        fs.copyFileSync(VAULT_FILE, VAULT_BAK_FILE);
+      } catch (_) {}
+    }
+    // Atomic rename replaces target instantly
+    fs.renameSync(tempFile, VAULT_FILE);
   } catch (err) {
     console.error('Failed to save telegram vault:', err.message);
   }
