@@ -65,4 +65,37 @@ Real-world users experiencing multiple audio stream degradation issues:
 **Verified:**
 - Audio Server 1 (`30238`) and Audio Server 2 (`30289`) deployed and verified healthy with active listeners.
 - Main Controller (`30195`) deployed and verified healthy.
-- All code syntax and integrity checks passed.
+
+## Debug Session: Workflow Confirmation & Termux-First Faulty Track Re-encoding
+
+### Expected Workflow (User Specification):
+1. **Song Request:**
+   - Check L1 SSD Cache (`CACHE_DIR`), then L2 Telegram Cloud Vault (`telegram_vault.json`).
+   - If not in cache:
+     - Check if Termux Residential Bridge is available.
+     - **If Termux is available:** Request TTS announcement (`/tts`) AND download song (`/stream`). One copy cached in L2 Telegram Vault, one copy sent to Audio Server (`/play`).
+     - **If Termux is NOT available:** Skip TTS completely. Request song from Cloud Worker (`/stream`). Worker generates music only (no TTS). One copy cached in L2 Telegram Vault, one copy sent to Audio Server (`/play`).
+2. **Faulty Encoding Handling (Cache Hit with non-96k audio):**
+   - When a faulty/legacy encoded track is retrieved from cache or vault:
+     - Check if Termux Residential Bridge is available.
+     - **If Termux is available:** Offload re-encoding to Termux (`/transcode`).
+     - **If Termux is NOT available:** Offload re-encoding to Cloud Worker (`/transcode`).
+   - In both cases:
+     - Clean 96kbps CBR MP3 buffer returned to Central Controller.
+     - Central Controller saves clean copy to L1 cache.
+     - Central Controller uploads clean copy to L2 Telegram Vault.
+     - Central Controller deletes old faulty message from Telegram channel (`deleteMessage`).
+     - Audio Server receives clean 96k MP3 for zero-CPU playback.
+
+### Identified Gap:
+- Prior implementation routed `transcodeViaWorker` solely to the Cloud Worker without checking if Termux was available.
+- `residential/server.js` lacked the `/transcode` endpoint and its `/stream` endpoint saved `.m4a`.
+
+### Resolution Applied:
+1. `residential/server.js`:
+   - Added `/transcode` endpoint accepting POST binary audio and transcoding via single-thread FFmpeg to 96kbps CBR 44.1kHz stereo MP3.
+   - Updated `/stream` to transcode downloaded YouTube audio directly to 96kbps CBR MP3 before delivering.
+2. `main-server/server.js`:
+   - Updated `transcodeAudio` to prioritize Termux (`${activeResidentialBridgeUrl}/transcode`) whenever `isBridgeAlive` is true, with seamless fallback to `${DOWNLOAD_WORKER_URL}/transcode` if Termux fails or is offline.
+   - Preserved Telegram channel `deleteMessage` on the old faulty message.
+3. Deployed and verified healthy on Central Controller (`6a95145f`).
