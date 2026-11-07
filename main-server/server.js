@@ -779,64 +779,85 @@ function uploadToTelegramVaultBackground(filePath, cacheKey, title, artist, dura
 }
 
 /**
- * Offloads audio repair/normalization to Cloud Download Worker's FFmpeg.
+ * Offloads audio repair/normalization to Termux Residential Bridge (primary if available) or Cloud Worker.
  * Controller remains 100% FFmpeg-free (0 child processes, 0 FFmpeg binaries).
  */
-async function transcodeViaWorker(sourceFilePath, cacheKey, title, artist, durationSeconds = 0) {
-  if (!DOWNLOAD_WORKER_URL) {
-    console.warn('⚠️ [WorkerTranscode] Cannot transcode: DOWNLOAD_WORKER_URL is not configured');
+async function transcodeAudio(sourceFilePath, cacheKey, title, artist, durationSeconds = 0) {
+  const isBridgeAlive = Boolean(activeResidentialBridgeUrl && (Date.now() - lastResidentialBridgeHeartbeat < 120000));
+
+  // If Termux bridge is available, try it first; fallback to Cloud Worker if Termux fails or is offline
+  const targets = [];
+  if (isBridgeAlive) {
+    targets.push({ name: 'Termux Residential Bridge', url: `${activeResidentialBridgeUrl}/transcode` });
+  }
+  if (DOWNLOAD_WORKER_URL) {
+    targets.push({ name: 'Cloud Download Worker', url: `${DOWNLOAD_WORKER_URL}/transcode` });
+  }
+
+  if (targets.length === 0) {
+    console.warn('⚠️ [AudioRepair] Cannot transcode: neither Termux bridge nor Cloud Worker is available');
     return null;
   }
+
   try {
-    console.log(`🔄 [WorkerTranscode] Offloading repair transcode for "${title || cacheKey}" to Cloud Worker (${DOWNLOAD_WORKER_URL}/transcode)...`);
     const fileBuf = await fs.promises.readFile(sourceFilePath);
-    const transRes = await fetch(`${DOWNLOAD_WORKER_URL}/transcode`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/octet-stream' },
-      body: fileBuf,
-      signal: AbortSignal.timeout(60000)
-    });
 
-    if (!transRes.ok) {
-      console.warn(`⚠️ [WorkerTranscode] Cloud Worker returned HTTP ${transRes.status}`);
-      return null;
+    for (const target of targets) {
+      try {
+        console.log(`🔄 [AudioRepair] Offloading repair transcode for "${title || cacheKey}" to ${target.name} (${target.url})...`);
+        const transRes = await fetch(target.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: fileBuf,
+          signal: AbortSignal.timeout(60000)
+        });
+
+        if (!transRes.ok) {
+          console.warn(`⚠️ [AudioRepair] ${target.name} returned HTTP ${transRes.status}`);
+          continue;
+        }
+
+        const transArray = await transRes.arrayBuffer();
+        const transBuf = Buffer.from(transArray);
+
+        if (transBuf.length > 5000 && is96kCbrMp3Buffer(transBuf)) {
+          const persistentMp3 = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
+          fs.writeFileSync(persistentMp3, transBuf);
+          console.log(`✅ [AudioRepair] Successfully repaired & cached 96k CBR MP3 via ${target.name} for "${title || cacheKey}" (${(transBuf.length / 1024 / 1024).toFixed(2)} MB)!`);
+
+          // If legacy .m4a was present, delete it
+          const legacyM4a = path.join(CACHE_DIR, `song_${cacheKey}.m4a`);
+          try { if (fs.existsSync(legacyM4a)) fs.unlinkSync(legacyM4a); } catch (_) {}
+
+          // Write metadata json
+          const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
+          fs.writeFileSync(jsonFile, JSON.stringify({
+            title: title || 'Repaired Track',
+            artist: artist || 'Unknown Artist',
+            durationSeconds: durationSeconds || 0,
+            source: `${target.name} 96k Transcode Repair`,
+            format: 'mp3'
+          }, null, 2));
+
+          // Overwrite/upgrade Telegram Cloud Vault with the clean 96k CBR MP3 and delete old message
+          uploadToTelegramVaultBackground(persistentMp3, cacheKey, title, artist, durationSeconds, true);
+
+          pruneSongCache();
+          return persistentMp3;
+        } else {
+          console.warn(`⚠️ [AudioRepair] Output from ${target.name} was invalid or not 96k CBR MP3`);
+        }
+      } catch (err) {
+        console.warn(`⚠️ [AudioRepair] Transcode via ${target.name} failed (${err.message}), trying next target...`);
+      }
     }
-
-    const transArray = await transRes.arrayBuffer();
-    const transBuf = Buffer.from(transArray);
-
-    if (transBuf.length > 5000 && is96kCbrMp3Buffer(transBuf)) {
-      const persistentMp3 = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
-      fs.writeFileSync(persistentMp3, transBuf);
-      console.log(`✅ [WorkerTranscode] Successfully repaired & cached 96k CBR MP3 for "${title || cacheKey}" (${(transBuf.length / 1024 / 1024).toFixed(2)} MB)!`);
-
-      // If legacy .m4a was present, delete it
-      const legacyM4a = path.join(CACHE_DIR, `song_${cacheKey}.m4a`);
-      try { if (fs.existsSync(legacyM4a)) fs.unlinkSync(legacyM4a); } catch (_) {}
-
-      // Write metadata json
-      const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
-      fs.writeFileSync(jsonFile, JSON.stringify({
-        title: title || 'Repaired Track',
-        artist: artist || 'Unknown Artist',
-        durationSeconds: durationSeconds || 0,
-        source: 'Cloud Worker 96k Transcode Repair',
-        format: 'mp3'
-      }, null, 2));
-
-      // Overwrite/upgrade Telegram Cloud Vault with the clean 96k CBR MP3
-      uploadToTelegramVaultBackground(persistentMp3, cacheKey, title, artist, durationSeconds, true);
-
-      pruneSongCache();
-      return persistentMp3;
-    } else {
-      console.warn(`⚠️ [WorkerTranscode] Output from Worker was invalid or not 96k CBR MP3`);
-    }
-  } catch (err) {
-    console.warn(`⚠️ [WorkerTranscode] Repair transcode failed:`, err.message);
+  } catch (outerErr) {
+    console.warn(`⚠️ [AudioRepair] Failed to read source file for repair:`, outerErr.message);
   }
   return null;
 }
+
+const transcodeViaWorker = transcodeAudio;
 
 async function fetchAndSaveTelegramFile(directUrl, cacheKey, track) {
   try {

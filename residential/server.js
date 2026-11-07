@@ -136,6 +136,84 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (reqUrl.pathname === '/transcode') {
+    const uniqueSession = `${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const tempRawInput = path.join(CACHE_DIR, `raw_trans_${uniqueSession}.raw`);
+    const tempFinalMp3 = path.join(CACHE_DIR, `final_trans_${uniqueSession}.mp3`);
+
+    const cleanUp = () => {
+      try { if (fs.existsSync(tempRawInput)) fs.unlinkSync(tempRawInput); } catch (_) {}
+      try { if (fs.existsSync(tempFinalMp3)) fs.unlinkSync(tempFinalMp3); } catch (_) {}
+    };
+
+    try {
+      if (req.method === 'POST') {
+        const fileStream = fs.createWriteStream(tempRawInput);
+        await new Promise((resolve, reject) => {
+          req.pipe(fileStream);
+          req.on('error', reject);
+          fileStream.on('finish', resolve);
+          fileStream.on('error', reject);
+        });
+      } else {
+        const sourceUrl = reqUrl.searchParams.get('url');
+        if (!sourceUrl) {
+          res.writeHead(400, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Missing POST body or ?url= parameter' }));
+        }
+        const srcRes = await fetch(sourceUrl, { signal: AbortSignal.timeout(30000) });
+        if (!srcRes.ok) throw new Error(`Source audio returned HTTP ${srcRes.status}`);
+        const buf = Buffer.from(await srcRes.arrayBuffer());
+        await fs.promises.writeFile(tempRawInput, buf);
+      }
+
+      if (fs.statSync(tempRawInput).size < 1000) {
+        throw new Error('Uploaded audio payload too small');
+      }
+
+      // Transcode via Termux's single-thread FFmpeg strictly to 96kbps CBR 44.1kHz stereo MP3
+      await new Promise((resolve, reject) => {
+        const ff = spawn('ffmpeg', [
+          '-y',
+          '-threads', '1',
+          '-i', tempRawInput,
+          '-vn',
+          '-c:a', 'libmp3lame',
+          '-b:a', '96k',
+          '-ar', '44100',
+          '-ac', '2',
+          '-write_xing', '0',
+          '-id3v2_version', '0',
+          tempFinalMp3
+        ], { stdio: ['ignore', 'ignore', 'pipe'] });
+
+        let errBuf = '';
+        ff.stderr.on('data', d => errBuf += d.toString());
+        ff.on('close', code => {
+          if (code === 0) resolve();
+          else reject(new Error(`FFmpeg transcode failed (code ${code}): ${errBuf.slice(-200)}`));
+        });
+        ff.on('error', reject);
+      });
+
+      const st = fs.statSync(tempFinalMp3);
+      res.writeHead(200, {
+        'Content-Type': 'audio/mpeg',
+        'Content-Length': st.size,
+        'Cache-Control': 'no-cache'
+      });
+      const stream = fs.createReadStream(tempFinalMp3);
+      stream.pipe(res);
+      stream.on('finish', cleanUp);
+      stream.on('error', cleanUp);
+      return;
+    } catch (err) {
+      cleanUp();
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ error: 'Transcode error', details: err.message }));
+    }
+  }
+
   if (reqUrl.pathname === '/stream') {
     const targetUrl = reqUrl.searchParams.get('url');
     if (!targetUrl) {
@@ -144,7 +222,7 @@ const server = http.createServer(async (req, res) => {
     }
 
     const key = getCacheKey(targetUrl);
-    const cachedFile = path.join(CACHE_DIR, `${key}.m4a`);
+    const cachedFile = path.join(CACHE_DIR, `${key}.mp3`);
 
     console.log(`[ResidentialBridge] 📥 [Client: ${clientIp}] Request for: ${targetUrl}`);
 
@@ -153,9 +231,9 @@ const server = http.createServer(async (req, res) => {
       try {
         const stats = fs.statSync(cachedFile);
         if (stats.size > 50000) {
-          console.log(`[ResidentialBridge] ⚡ Serving cached file (${(stats.size / 1024 / 1024).toFixed(2)} MB)...`);
+          console.log(`[ResidentialBridge] ⚡ Serving cached 96k CBR MP3 (${(stats.size / 1024 / 1024).toFixed(2)} MB)...`);
           res.writeHead(200, {
-            'Content-Type': 'audio/mp4',
+            'Content-Type': 'audio/mpeg',
             'Content-Length': stats.size,
             'Cache-Control': 'public, max-age=86400',
             'X-Bridge-Source': 'residential-cache'
@@ -166,11 +244,12 @@ const server = http.createServer(async (req, res) => {
     }
 
     // Download audio via residential IP
-    const tempFile = path.join(CACHE_DIR, `${key}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.temp.m4a`);
+    const tempRaw = path.join(CACHE_DIR, `${key}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.raw`);
+    const tempMp3 = path.join(CACHE_DIR, `${key}.${Date.now()}.${Math.random().toString(36).slice(2, 6)}.mp3`);
 
     const currentArgs = [
       '-f', 'ba[ext=m4a]/ba[ext=webm]/bestaudio/ba/b/best',
-      '-o', tempFile,
+      '-o', tempRaw,
       '--no-video',
       '--no-playlist',
       '--no-warnings',
@@ -185,10 +264,10 @@ const server = http.createServer(async (req, res) => {
     let errBuffer = '';
     ytProcess.stderr.on('data', (d) => { errBuffer += d.toString(); });
 
-    ytProcess.on('close', (code, signal) => {
-      if (code !== 0 || !fs.existsSync(tempFile)) {
+    ytProcess.on('close', async (code, signal) => {
+      if (code !== 0 || !fs.existsSync(tempRaw)) {
         console.error(`[ResidentialBridge] ❌ Download failed (code ${code}, signal ${signal}): ${errBuffer.slice(0, 200)}`);
-        try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch (_) {}
+        try { if (fs.existsSync(tempRaw)) fs.unlinkSync(tempRaw); } catch (_) {}
         if (!res.headersSent) {
           res.writeHead(502, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: 'Download failed', code, signal, details: errBuffer.slice(-300) }));
@@ -196,24 +275,59 @@ const server = http.createServer(async (req, res) => {
         return;
       }
 
+      // Transcode downloaded audio directly to 96kbps CBR 44.1kHz stereo MP3
       try {
-        fs.renameSync(tempFile, cachedFile);
-      } catch (_) {}
+        console.log(`[ResidentialBridge] 🔄 Transcoding downloaded track to 96k CBR MP3...`);
+        await new Promise((resolve, reject) => {
+          const ff = spawn('ffmpeg', [
+            '-y',
+            '-threads', '1',
+            '-i', tempRaw,
+            '-vn',
+            '-c:a', 'libmp3lame',
+            '-b:a', '96k',
+            '-ar', '44100',
+            '-ac', '2',
+            '-write_xing', '0',
+            '-id3v2_version', '0',
+            tempMp3
+          ], { stdio: ['ignore', 'ignore', 'pipe'] });
 
-      const fileToStream = fs.existsSync(cachedFile) ? cachedFile : tempFile;
-      const stats = fs.statSync(fileToStream);
-
-      pruneBridgeCache();
-
-      console.log(`[ResidentialBridge] ✅ Completed download (${(stats.size / 1024 / 1024).toFixed(2)} MB). Streaming to client...`);
-      if (!res.headersSent) {
-        res.writeHead(200, {
-          'Content-Type': 'audio/mp4',
-          'Content-Length': stats.size,
-          'Cache-Control': 'public, max-age=86400',
-          'X-Bridge-Source': 'residential-direct'
+          let ffErr = '';
+          ff.stderr.on('data', d => ffErr += d.toString());
+          ff.on('close', c => {
+            if (c === 0 && fs.existsSync(tempMp3)) resolve();
+            else reject(new Error(`FFmpeg transcode failed (code ${c}): ${ffErr.slice(-200)}`));
+          });
+          ff.on('error', reject);
         });
-        fs.createReadStream(fileToStream).pipe(res);
+
+        try { fs.unlinkSync(tempRaw); } catch (_) {}
+        try { fs.renameSync(tempMp3, cachedFile); } catch (_) {}
+
+        const fileToStream = fs.existsSync(cachedFile) ? cachedFile : tempMp3;
+        const stats = fs.statSync(fileToStream);
+
+        pruneBridgeCache();
+
+        console.log(`[ResidentialBridge] ✅ Completed 96k CBR transcode (${(stats.size / 1024 / 1024).toFixed(2)} MB). Streaming to client...`);
+        if (!res.headersSent) {
+          res.writeHead(200, {
+            'Content-Type': 'audio/mpeg',
+            'Content-Length': stats.size,
+            'Cache-Control': 'public, max-age=86400',
+            'X-Bridge-Source': 'residential-direct'
+          });
+          fs.createReadStream(fileToStream).pipe(res);
+        }
+      } catch (trErr) {
+        console.error(`[ResidentialBridge] Transcode error:`, trErr.message);
+        try { if (fs.existsSync(tempRaw)) fs.unlinkSync(tempRaw); } catch (_) {}
+        try { if (fs.existsSync(tempMp3)) fs.unlinkSync(tempMp3); } catch (_) {}
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Transcode failed', details: trErr.message }));
+        }
       }
     });
 
