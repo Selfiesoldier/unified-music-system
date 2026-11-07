@@ -1,7 +1,5 @@
-import { spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
-import { getFFmpegPath } from './ffmpegHelper.js';
 
 const CHUNK_SIZE = 1200; // 100ms at 96kbps CBR (12000 bytes/sec * 0.1 = 1200 bytes)
 const MAX_BURST_BYTES = 12 * 1024; // 12 KB = ~1.02 seconds of 96kbps MP3 audio
@@ -37,7 +35,6 @@ export class PersistentStreamManager {
 
     // Announcement state
     this.announcementSessionId = 0;
-    this.currentAnnouncementProc = null;
     this.isAnnouncing = false;
 
     this.streamVersion = 1;
@@ -272,10 +269,6 @@ export class PersistentStreamManager {
   stopAnnouncement() {
     this.announcementSessionId = (this.announcementSessionId || 0) + 1;
     this.isAnnouncing = false;
-    if (this.currentAnnouncementProc) {
-      try { this.currentAnnouncementProc.kill('SIGKILL'); } catch (_) {}
-      this.currentAnnouncementProc = null;
-    }
   }
 
   startNewAnnouncementSession() {
@@ -287,24 +280,8 @@ export class PersistentStreamManager {
     return Boolean(sessionId && sessionId === this.announcementSessionId);
   }
 
-  setAnnouncementProc(proc, sessionId) {
-    if (this.isAnnouncementSessionActive(sessionId)) {
-      this.currentAnnouncementProc = proc;
-    } else {
-      try { proc.kill('SIGKILL'); } catch (_) {}
-    }
-  }
-
-  clearAnnouncementProc(proc) {
-    if (this.currentAnnouncementProc === proc) {
-      this.currentAnnouncementProc = null;
-    }
-  }
-
   async normalizeAudioTo96kMp3(inputBuffer) {
-    if (!inputBuffer || inputBuffer.length === 0) return inputBuffer;
-    const ffmpegPath = getFFmpegPath();
-    if (!ffmpegPath) return inputBuffer;
+    if (!inputBuffer || inputBuffer.length === 0) return null;
 
     // Fast check: verify if already 96k CBR 44100Hz Stereo MP3
     let syncOffset = -1;
@@ -329,45 +306,19 @@ export class PersistentStreamManager {
       }
     }
 
-    console.log(`🎙️ [StreamManager] Normalizing speech announcement to strict 96k CBR 44.1kHz Stereo MP3 (${(inputBuffer.length / 1024).toFixed(1)} KB)...`);
-    return new Promise((resolve) => {
-      const ff = spawn(ffmpegPath, [
-        '-y',
-        '-i', 'pipe:0',
-        '-c:a', 'libmp3lame',
-        '-b:a', '96k',
-        '-ar', '44100',
-        '-ac', '2',
-        '-write_xing', '0',
-        '-id3v2_version', '0',
-        '-f', 'mp3',
-        'pipe:1'
-      ], { stdio: ['pipe', 'pipe', 'ignore'] });
-
-      const chunks = [];
-      ff.stdout.on('data', c => chunks.push(c));
-      ff.on('close', code => {
-        if (code === 0 && chunks.length > 0) {
-          const res = Buffer.concat(chunks);
-          console.log(`✅ [StreamManager] Normalized announcement audio: ${(res.length / 1024).toFixed(1)} KB (~${((res.length / 12000)).toFixed(1)}s, 96kbps stereo).`);
-          resolve(res);
-        } else {
-          resolve(inputBuffer);
-        }
-      });
-      ff.on('error', err => {
-        console.warn('⚠️ [StreamManager] Normalizer error:', err.message);
-        resolve(inputBuffer);
-      });
-      ff.stdin.end(inputBuffer);
-    });
+    console.error('❌ [StreamManager] Strict Zero-Load: Received non-96k MP3 announcement. Speech normalization must be performed upstream. Refusing playback.');
+    return null;
   }
 
   async streamAnnouncementMp3(mp3Buffer, sessionId) {
     if (!mp3Buffer || mp3Buffer.length === 0) return true;
 
-    // 1. Normalize speech to exact 96k CBR 44.1kHz stereo MP3
+    // 1. Verify speech is exact 96k CBR 44.1kHz stereo MP3
     const normalizedBuffer = await this.normalizeAudioTo96kMp3(mp3Buffer);
+    if (!normalizedBuffer) {
+      console.warn('⚠️ [StreamManager] Announcement aborted: audio buffer failed 96k CBR MP3 validation.');
+      return false;
+    }
     const expectedSession = sessionId !== null ? sessionId : this.announcementSessionId;
     if (this.announcementSessionId !== expectedSession) return false;
 
