@@ -1,0 +1,31 @@
+{
+  "noses": [
+    { "id": "nose-n_room22019nosestud", "item_name": "Nose Stud" },
+
+    { "id": "nose-n_basic2018newnose20", "item_name": "Dot Nose" },
+    { "id": "nose-n_basic2018newnose19", "item_name": "Freckle Nose" },
+    { "id": "nose-n_basic2018newnose18", "item_name": "Silver Nose Ring" },
+    { "id": "nose-n_basic2018newnose17", "item_name": "Septum Piercing" },
+    { "id": "nose-n_basic2018newnose16", "item_name": "Angular Nose" },
+    { "id": "nose-n_basic2018newnose15", "item_name": "Button Nose" },
+    { "id": "nose-n_basic2018newnose14", "item_name": "Soft Nose" },
+    { "id": "nose-n_basic2018newnose13", "item_name": "Hooked Nose" },
+    { "id": "nose-n_basic2018newnose11", "item_name": "Bean Nose" },
+    { "id": "nose-n_basic2018newnose09", "item_name": "Bulb Nose" },
+    { "id": "nose-n_basic2018newnose05", "item_name": "Straight Nose" },
+    { "id": "nose-n_basic2018newnose04", "item_name": "Pinched Nose" },
+    { "id": "nose-n_basic2018newnose03", "item_name": "Teardrop Nose" },
+
+    { "id": "nose-n_26", "item_name": "Bubble Nose" },
+    { "id": "nose-n_23", "item_name": "Defined Nose" },
+    { "id": "nose-n_19", "item_name": "Sledge Nose" },
+    { "id": "nose-n_12_b", "item_name": "Sharper Nose" },
+    { "id": "nose-n_12", "item_name": "Sharp Nose" },
+    { "id": "nose-n_07_b", "item_name": "Thicker Nose" },
+    { "id": "nose-n_07", "item_name": "Flared Nose" },
+    { "id": "nose-n_03_b", "item_name": "Ramp Nose" },
+    { "id": "nose-n_03", "item_name": "Slope Nose" },
+    { "id": "nose-n_01_b", "item_name": "Dainty Nose" },
+    { "id": "nose-n_01", "item_name": "Baby Nose" }
+  ]
+}

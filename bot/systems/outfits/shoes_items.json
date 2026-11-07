@@ -1,0 +1,75 @@
+{
+  "shoes": {
+    "shoes-n_whitedans": {
+      "item_name": "White Dans"
+    },
+    "shoes-n_starteritems2019flatswhite": {
+      "item_name": "White Flats"
+    },
+    "shoes-n_starteritems2019flatspink": {
+      "item_name": "Pink Flats"
+    },
+    "shoes-n_starteritems2019flatsblack": {
+      "item_name": "Black Flats"
+    },
+    "shoes-n_starteritems2018conversewhite": {
+      "item_name": "White Converse"
+    },
+    "shoes-n_room32019socksneakersgrey": {
+      "item_name": "Grey Sock Sneakers"
+    },
+    "shoes-n_room32019socksneakersblack": {
+      "item_name": "Black Sock Sneakers"
+    },
+    "shoes-n_room32019chunkysneaks": {
+      "item_name": "White Chunky Sneaks"
+    },
+    "shoes-n_room22019kneehighsblack": {
+      "item_name": "Black Knee High Boots"
+    },
+    "shoes-n_room22019heelspink": {
+      "item_name": "Basic Pink Heels"
+    },
+    "shoes-n_room12019sneakerspink": {
+      "item_name": "Basic Pink Sneakers"
+    },
+    "shoes-n_room12019sneakersblack": {
+      "item_name": "Basic Black Sneakers"
+    },
+    "shoes-n_room12019sandalsgrey": {
+      "item_name": "Basic Grey Sandals"
+    },
+    "shoes-n_room12019hightopsred": {
+      "item_name": "Red High Tops"
+    },
+    "shoes-n_room12019hightopsblack": {
+      "item_name": "Black High Tops"
+    },
+    "shoes-n_room12019bootsblack": {
+      "item_name": "Basic Black Boots"
+    },
+    "shoes-n_platformsneakerblack": {
+      "item_name": "Black Platform Sneakers"
+    },
+    "shoes-n_drstompsbootsyellow": {
+      "item_name": "Yellow Dr. Stomp Boots"
+    },
+    "shoes-n_drstompsbootswhite": {
+      "item_name": "White Dr. Stomp Boots"
+    },
+    "shoes-n_drstompsbootscherry": {
+      "item_name": "Cherry Dr. Stomp Boots"
+    },
+    "shoes-n_converse_black": {
+      "item_name": "Black Converse"
+    },
+    "shoes-n_converse": {
+      "item_name": "Converse Sneakers"
+    }
+  },
+  "socks": {
+    "shoes-n_room22019tallsocks": {
+      "item_name": "Tall Socks"
+    }
+  }
+}

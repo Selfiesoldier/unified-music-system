@@ -1,0 +1,91 @@
+{
+  "upper_face_hair": [
+    {
+      "id": "face_hair-n_newbasicfacehairupper17",
+      "item_name": "Chevron Mustache"
+    },
+    { "id": "face_hair-n_newbasicfacehairupper16", "item_name": "Cantinflas" },
+    {
+      "id": "face_hair-n_newbasicfacehairupper15",
+      "item_name": "Walrus Mustache"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairupper14",
+      "item_name": "Toothbrush Mustache"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairupper13",
+      "item_name": "Dali Mustache"
+    },
+    { "id": "face_hair-n_newbasicfacehairupper08", "item_name": "The Mario" },
+    {
+      "id": "face_hair-n_newbasicfacehairupper07",
+      "item_name": "Downward English"
+    },
+    { "id": "face_hair-n_newbasicfacehairupper06", "item_name": "Horseshoe" },
+    { "id": "face_hair-n_newbasicfacehairupper05", "item_name": "Handlebar" },
+    {
+      "id": "face_hair-n_newbasicfacehairupper04",
+      "item_name": "Dallas Mustache"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairupper02",
+      "item_name": "Long Stubble Mustache"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairupper01",
+      "item_name": "Stubble Mustache"
+    }
+  ],
+
+  "lower_face_hair": [
+    {
+      "id": "face_hair-n_newbasicfacehairlower20",
+      "item_name": "Small Sideburn"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairlower18",
+      "item_name": "Mutton Chops"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairlower17",
+      "item_name": "Long Sideburn"
+    },
+    { "id": "face_hair-n_newbasicfacehairlower16", "item_name": "Full Beard" },
+    {
+      "id": "face_hair-n_newbasicfacehairlower13",
+      "item_name": "Garibaldi Beard"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairlower12",
+      "item_name": "Shaggy Beard"
+    },
+    { "id": "face_hair-n_newbasicfacehairlower09", "item_name": "Long Goatee" },
+    {
+      "id": "face_hair-n_newbasicfacehairlower08b",
+      "item_name": "Corporate Beard"
+    },
+    { "id": "face_hair-n_newbasicfacehairlower07", "item_name": "Brett Beard" },
+    {
+      "id": "face_hair-n_newbasicfacehairlower06",
+      "item_name": "Pointy Chin Beard"
+    },
+    { "id": "face_hair-n_newbasicfacehairlower05", "item_name": "Soul Patch" },
+    {
+      "id": "face_hair-n_newbasicfacehairlower04",
+      "item_name": "Extended Soul Patch"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairlower02new",
+      "item_name": "Long Stubble"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairlower02bnew",
+      "item_name": "Stubble Goatee"
+    },
+    {
+      "id": "face_hair-n_newbasicfacehairlower01",
+      "item_name": "Light Stubble"
+    }
+  ]
+}

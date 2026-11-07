@@ -1,0 +1,34 @@
+{
+  "avatar": {
+    "hair_front": "hair_front-n_malenew21",
+    "hair_back": "hair_back-n_malenew21",
+    "upper_face_hair": null,
+    "lower_face_hair": null,
+    "eyebrows": "eyebrow-n_07",
+    "eyes": "eye-n_basic2018malealmondsquint",
+    "nose": "nose-n_01_b",
+    "mouth": "mouth-basic2018openthinpeaked",
+    "shirt": "shirt-n_mermaidcoreudcskypass2023hritemssaltytshirt",
+    "pants": "pants-n_room32019baggytrackpantsred",
+    "skirt": null,
+    "shoes": "shoes-n_room12019sneakersblack",
+    "socks": null,
+    "gloves": null,
+    "glasses": null,
+    "bag": null,
+    "earrings": null,
+    "necklace": null,
+    "watch": null,
+    "handbag": "handbag-n_room32019skateboardxo",
+    "freckles": "freckle-n_basic2018freckle04",
+    "skin_color": null
+  },
+  "colors": {
+    "hair_front": 0,
+    "hair_back": 0,
+    "upper_face_hair": 0,
+    "lower_face_hair": 0,
+    "eyebrows": 0,
+    "eyes": 0
+  }
+}

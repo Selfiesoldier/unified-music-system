@@ -1,0 +1,1227 @@
+{
+  "description": "Complete reference list of all facial feature items in Highrise",
+  "total_items": 403,
+  "hair_front": {
+    "hair_front-n_malenew33": {
+      "item_name": "Short Short Fro"
+    },
+    "hair_front-n_malenew32": {
+      "item_name": "Box Braids"
+    },
+    "hair_front-n_malenew31": {
+      "item_name": "Long Undercut Dreads"
+    },
+    "hair_front-n_malenew30": {
+      "item_name": "Undercut Dreads"
+    },
+    "hair_front-n_malenew29": {
+      "item_name": "Side Swept Fro"
+    },
+    "hair_front-n_malenew27": {
+      "item_name": "Long Buzzed Fro"
+    },
+    "hair_front-n_malenew26": {
+      "item_name": "Short Buzzed Fro"
+    },
+    "hair_front-n_malenew25": {
+      "item_name": "Curly Undercut"
+    },
+    "hair_front-n_malenew24": {
+      "item_name": "Tight curls"
+    },
+    "hair_front-n_malenew23": {
+      "item_name": "Loose Curls"
+    },
+    "hair_front-n_malenew22": {
+      "item_name": "Shaggy Curls"
+    },
+    "hair_front-n_malenew21": {
+      "item_name": "Short Curls"
+    },
+    "hair_front-n_malenew20": {
+      "item_name": "Medium Wavy Cut"
+    },
+    "hair_front-n_malenew19": {
+      "item_name": "Short Wavy Cut"
+    },
+    "hair_front-n_malenew18": {
+      "item_name": "Wavy Undercut"
+    },
+    "hair_front-n_malenew17": {
+      "item_name": "Wavy Side Part"
+    },
+    "hair_front-n_malenew16": {
+      "item_name": "Shaggy Side Part"
+    },
+    "hair_front-n_malenew15": {
+      "item_name": "Combed Back Waves"
+    },
+    "hair_front-n_malenew14": {
+      "item_name": "Blown Back Waves"
+    },
+    "hair_front-n_malenew13": {
+      "item_name": "Short Straight"
+    },
+    "hair_front-n_malenew12": {
+      "item_name": "Side Combed Straight"
+    },
+    "hair_front-n_malenew11": {
+      "item_name": "Straight Slicked Back"
+    },
+    "hair_front-n_malenew10": {
+      "item_name": "Buzz Cut"
+    },
+    "hair_front-n_malenew09": {
+      "item_name": "Shaggy Crew Cut"
+    },
+    "hair_front-n_malenew08": {
+      "item_name": "Faux Hawk"
+    },
+    "hair_front-n_malenew07": {
+      "item_name": "Shaggy Straight"
+    },
+    "hair_front-n_malenew06": {
+      "item_name": "Straight Side Part"
+    },
+    "hair_front-n_malenew05": {
+      "item_name": "Combed Back Undercut"
+    },
+    "hair_front-n_malenew04": {
+      "item_name": "Upward Swoosh"
+    },
+    "hair_front-n_malenew03": {
+      "item_name": "Side Swept Undercut"
+    },
+    "hair_front-n_malenew02": {
+      "item_name": "Side Swept"
+    },
+    "hair_front-n_malenew01": {
+      "item_name": "Crew Cut"
+    },
+    "hair_front-n_basic2020overshoulderwavyshort": {
+      "item_name": "Over Shoulder Wavy Short"
+    },
+    "hair_front-n_basic2020overshoulderwavy": {
+      "item_name": "Over Shoulder Wavy Long"
+    },
+    "hair_front-n_basic2020overshoulderstraightshort": {
+      "item_name": "Over Shoulder Straight Short"
+    },
+    "hair_front-n_basic2020overshoulderstraightbangs": {
+      "item_name": "Over Shoulder Straight Bangs"
+    },
+    "hair_front-n_basic2020overshoulderstraight": {
+      "item_name": "Over Shoulder Straight Long"
+    },
+    "hair_front-n_basic2020overshoulderpony": {
+      "item_name": "Over Shoulder Pony"
+    },
+    "hair_front-n_basic2020overshouldercurly": {
+      "item_name": "Over Shoulder Curly"
+    },
+    "hair_front-n_basic2020overshouldercoily": {
+      "item_name": "Over Shoulder Coily"
+    },
+    "hair_front-n_basic2020overshoulderbraid": {
+      "item_name": "Over Shoulder Braid"
+    },
+    "hair_front-n_basic2019wavyoffsetpart": {
+      "item_name": "Wavy Offset Part"
+    },
+    "hair_front-n_basic2019wavyflipdroop": {
+      "item_name": "Wavy Flipped Droopy Bang"
+    },
+    "hair_front-n_basic2019wavyflipbangs": {
+      "item_name": "Wavy Flipped Bangs"
+    },
+    "hair_front-n_basic2019wavychunkysidebang": {
+      "item_name": "Chunky Wave Side Bang"
+    },
+    "hair_front-n_basic2019faceframewaves": {
+      "item_name": "Face Frame Waves"
+    },
+    "hair_front-n_basic2019bluntbangswithwaves": {
+      "item_name": "Blunt Bangs With Loose Waves"
+    },
+    "hair_front-n_basic2018wavysidebangs": {
+      "item_name": "Wavy Side Bangs"
+    },
+    "hair_front-n_basic2018wavypulledback": {
+      "item_name": "Wavy Pulled Back"
+    },
+    "hair_front-n_basic2018wavynobangs": {
+      "item_name": "Wavy No Bangs"
+    },
+    "hair_front-n_basic2018wavylowpart": {
+      "item_name": "Wavy Low Pulled Back"
+    },
+    "hair_front-n_basic2018wavyhalfup": {
+      "item_name": "Wavy Half Pulled Back"
+    },
+    "hair_front-n_basic2018wavyfullbangs": {
+      "item_name": "Wavy Full Bangs"
+    },
+    "hair_front-n_basic2018wavybettiebangs": {
+      "item_name": "Bettie Bangs"
+    },
+    "hair_front-n_basic2018wavybabybangs": {
+      "item_name": "Wavy Baby Bangs"
+    },
+    "hair_front-n_basic2018topknotwithbangs": {
+      "item_name": "Top Knot with Bangs"
+    },
+    "hair_front-n_basic2018topknot": {
+      "item_name": "Top Knot"
+    },
+    "hair_front-n_basic2018straightwhispybangs": {
+      "item_name": "Straight Wispy Bangs"
+    },
+    "hair_front-n_basic2018straightsidebangs": {
+      "item_name": "Straight Side Bangs"
+    },
+    "hair_front-n_basic2018straightpulledback": {
+      "item_name": "Straight Pulled Back"
+    },
+    "hair_front-n_basic2018straightnobangs": {
+      "item_name": "Straight No Bangs"
+    },
+    "hair_front-n_basic2018straightlowsidepart": {
+      "item_name": "Straight Low Pulled Back"
+    },
+    "hair_front-n_basic2018straightfullbangs": {
+      "item_name": "Straight Full Bangs"
+    },
+    "hair_front-n_basic2018straightbluntbangs": {
+      "item_name": "Blunt Bangs"
+    },
+    "hair_front-n_basic2018straightbangslowpart": {
+      "item_name": "Straight Low Pulled Back With Bangs"
+    },
+    "hair_front-n_basic2018straightbabybangs": {
+      "item_name": "Straight Baby Bangs"
+    },
+    "hair_front-n_basic2018sleekstraightpart": {
+      "item_name": "Sleek Straight Part"
+    },
+    "hair_front-n_basic2018sidebangspulledback": {
+      "item_name": "Side Bangs Pulled Back"
+    },
+    "hair_front-n_basic2018pulledbackbangs": {
+      "item_name": "Pulled Back with Bangs"
+    },
+    "hair_front-n_basic2018pulledback": {
+      "item_name": "Simple Pulled Back"
+    },
+    "hair_front-n_basic2018pigtailpart": {
+      "item_name": "Pig Tail Part"
+    },
+    "hair_front-n_basic2018mediumwavybettiebangs": {
+      "item_name": "Bettie Bangs"
+    },
+    "hair_front-n_basic2018mediumcurlymarilyn": {
+      "item_name": "Marilyn Curls"
+    },
+    "hair_front-n_basic2018marilyncurls": {
+      "item_name": "Marilyn Curls"
+    },
+    "hair_front-n_basic2018longwavytopknot": {
+      "item_name": "Wavy Pulled Back Bangs"
+    },
+    "hair_front-n_basic2018longstraighthalfpony": {
+      "item_name": "Chunky Side Swept Bangs"
+    },
+    "hair_front-n_basic2018dreadssidebangs": {
+      "item_name": "Dreads Side Bangs"
+    },
+    "hair_front-n_basic2018dreadspulledback": {
+      "item_name": "Dreads Pulled Back"
+    },
+    "hair_front-n_basic2018dreadsnobangs": {
+      "item_name": "Dreads No Bangs"
+    },
+    "hair_front-n_basic2018dreadsfullbangs": {
+      "item_name": "Dreads Full Bangs"
+    },
+    "hair_front-n_basic2018doubletopknots": {
+      "item_name": "Double Top Knots"
+    },
+    "hair_front-n_basic2018curlysidebangs": {
+      "item_name": "Curly Side Bangs"
+    },
+    "hair_front-n_basic2018curlypulledback": {
+      "item_name": "Curly Pulled Back"
+    },
+    "hair_front-n_basic2018curlynobangs": {
+      "item_name": "Curly No Bangs"
+    },
+    "hair_front-n_basic2018curlyfullbangs": {
+      "item_name": "Curly Full Bangs"
+    },
+    "hair_front-n_basic2018coilysidepart": {
+      "item_name": "Coily Side Part"
+    },
+    "hair_front-n_basic2018coilypinapple": {
+      "item_name": "Coily Pinapple Hair"
+    },
+    "hair_front-n_basic2018coilyhalfbun": {
+      "item_name": "Coily Half Bun"
+    },
+    "hair_front-n_basic2018coilssidebangs": {
+      "item_name": "Coils Side Part"
+    },
+    "hair_front-n_basic2018coilsfront": {
+      "item_name": "Coils Front"
+    },
+    "hair_front-n_basic2018buzzcut": {
+      "item_name": "Bald"
+    },
+    "hair_front-n_basic2018afropompoms": {
+      "item_name": "Afro Pom Poms"
+    },
+    "hair_front-n_basic2018afrofront": {
+      "item_name": "Afro Front"
+    }
+  },
+  "hair_back": {
+    "hair_back-n_malenew33": {
+      "item_name": "Short Short Fro"
+    },
+    "hair_back-n_malenew32": {
+      "item_name": "Box Braids"
+    },
+    "hair_back-n_malenew31": {
+      "item_name": "Long Undercut Dreads"
+    },
+    "hair_back-n_malenew30": {
+      "item_name": "Undercut Dreads"
+    },
+    "hair_back-n_malenew29": {
+      "item_name": "Side Swept Fro"
+    },
+    "hair_back-n_malenew27": {
+      "item_name": "Long Buzzed Fro"
+    },
+    "hair_back-n_malenew26": {
+      "item_name": "Short Buzzed Fro"
+    },
+    "hair_back-n_malenew25": {
+      "item_name": "Curly Undercut"
+    },
+    "hair_back-n_malenew24": {
+      "item_name": "Tight Curls"
+    },
+    "hair_back-n_malenew23": {
+      "item_name": "Loose Curls"
+    },
+    "hair_back-n_malenew22": {
+      "item_name": "Shaggy Curls"
+    },
+    "hair_back-n_malenew21": {
+      "item_name": "Short Curls"
+    },
+    "hair_back-n_malenew20": {
+      "item_name": "Medium Wavy Cut"
+    },
+    "hair_back-n_malenew19": {
+      "item_name": "Short Wavy Cut"
+    },
+    "hair_back-n_malenew18": {
+      "item_name": "Wavy Undercut"
+    },
+    "hair_back-n_malenew17": {
+      "item_name": "Wavy Side Part"
+    },
+    "hair_back-n_malenew16": {
+      "item_name": "Shaggy Side Part"
+    },
+    "hair_back-n_malenew15": {
+      "item_name": "Combed Back Waves"
+    },
+    "hair_back-n_malenew14": {
+      "item_name": "Blown Back Waves"
+    },
+    "hair_back-n_malenew13": {
+      "item_name": "Short Straight"
+    },
+    "hair_back-n_malenew12": {
+      "item_name": "Side Combed Straight"
+    },
+    "hair_back-n_malenew11": {
+      "item_name": "Straight Slicked Back"
+    },
+    "hair_back-n_malenew10": {
+      "item_name": "Buzz Cut"
+    },
+    "hair_back-n_malenew09": {
+      "item_name": "Shaggy Crew Cut"
+    },
+    "hair_back-n_malenew08": {
+      "item_name": "Faux Hawk"
+    },
+    "hair_back-n_malenew07": {
+      "item_name": "Shaggy Straight"
+    },
+    "hair_back-n_malenew06": {
+      "item_name": "Straight Side Part"
+    },
+    "hair_back-n_malenew05": {
+      "item_name": "Combed Back Undercut"
+    },
+    "hair_back-n_malenew04": {
+      "item_name": "Upward Swoosh"
+    },
+    "hair_back-n_malenew03": {
+      "item_name": "Side Swept Undercut"
+    },
+    "hair_back-n_malenew02": {
+      "item_name": "Side Swept"
+    },
+    "hair_back-n_malenew01": {
+      "item_name": "Crew Cut"
+    },
+    "hair_back-n_basic2020overshoulderwavyshort": {
+      "item_name": "Over Shoulder Wavy Short"
+    },
+    "hair_back-n_basic2020overshoulderwavy": {
+      "item_name": "Over Shoulder Wavy Long"
+    },
+    "hair_back-n_basic2020overshoulderstraightshort": {
+      "item_name": "Over Shoulder Straight Short"
+    },
+    "hair_back-n_basic2020overshoulderstraightbangs": {
+      "item_name": "Over Shoulder Straight Bangs"
+    },
+    "hair_back-n_basic2020overshoulderstraight": {
+      "item_name": "Over Shoulder Straight Long"
+    },
+    "hair_back-n_basic2020overshoulderpony": {
+      "item_name": "Over Shoulder Pony"
+    },
+    "hair_back-n_basic2020overshouldercurly": {
+      "item_name": "Over Shoulder Curly"
+    },
+    "hair_back-n_basic2020overshouldercoily": {
+      "item_name": "Over Shoulder Coily"
+    },
+    "hair_back-n_basic2020overshoulderbraid": {
+      "item_name": "Over Shoulder Braid"
+    },
+    "hair_back-n_basic2019wavylongbob": {
+      "item_name": "Wavy Long Bob"
+    },
+    "hair_back-n_basic2019sweetcurls": {
+      "item_name": "Sweet Curl Waves"
+    },
+    "hair_back-n_basic2019poofbob": {
+      "item_name": "Poofy Bob"
+    },
+    "hair_back-n_basic2019medbeachwave": {
+      "item_name": "Short Beach Waves"
+    },
+    "hair_back-n_basic2019longbeachwave": {
+      "item_name": "Long Beach Waves"
+    },
+    "hair_back-n_basic2019glamourwaves": {
+      "item_name": "Long Glamour Waves"
+    },
+    "hair_back-n_basic2019bigchunkywaves": {
+      "item_name": "Chunky Waves"
+    },
+    "hair_back-n_basic2018wavyshort": {
+      "item_name": "Wavy Short"
+    },
+    "hair_back-n_basic2018wavymed": {
+      "item_name": "Wavy Medium"
+    },
+    "hair_back-n_basic2018wavylowpony": {
+      "item_name": "Wavy Low Pony"
+    },
+    "hair_back-n_basic2018wavyhighpony": {
+      "item_name": "Wavy High Pony"
+    },
+    "hair_back-n_basic2018wavyextrashort": {
+      "item_name": "Wavy Pixie"
+    },
+    "hair_back-n_basic2018wavyextralong": {
+      "item_name": "Wavy Long"
+    },
+    "hair_back-n_basic2018topknotback": {
+      "item_name": "Top Knot Back"
+    },
+    "hair_back-n_basic2018straightshortlowpigtails": {
+      "item_name": "Straight Short Low Pigtails"
+    },
+    "hair_back-n_basic2018straightshorthighpigtails": {
+      "item_name": "Straight Short High Pigtails"
+    },
+    "hair_back-n_basic2018straightshort": {
+      "item_name": "Straight Short"
+    },
+    "hair_back-n_basic2018straightmedium": {
+      "item_name": "Straight Medium"
+    },
+    "hair_back-n_basic2018straightlowpony": {
+      "item_name": "Straight Low Pony"
+    },
+    "hair_back-n_basic2018straightlonglowpigtails": {
+      "item_name": "Straight Long Low Pigtails"
+    },
+    "hair_back-n_basic2018straightlong": {
+      "item_name": "Straight Long"
+    },
+    "hair_back-n_basic2018straighthighpony": {
+      "item_name": "Straight High Pony"
+    },
+    "hair_back-n_basic2018straightextrashort": {
+      "item_name": "Straight Pixie"
+    },
+    "hair_back-n_basic2018sleekstraightpony": {
+      "item_name": "Sleek Straight Pony"
+    },
+    "hair_back-n_basic2018sleekstraightmedium": {
+      "item_name": "Sleek Straight Medium"
+    },
+    "hair_back-n_basic2018sleekstraightlong": {
+      "item_name": "Sleek Straight Long"
+    },
+    "hair_back-n_basic2018sleekstraightextrashort": {
+      "item_name": "Sleek Straight Short"
+    },
+    "hair_back-n_basic2018mediumwavybettiebangs": {
+      "item_name": "Bettie Waves"
+    },
+    "hair_back-n_basic2018mediumcurlymarilyn": {
+      "item_name": "Marilyn Curls"
+    },
+    "hair_back-n_basic2018loosecoilyshort": {
+      "item_name": "Loose Coily Short"
+    },
+    "hair_back-n_basic2018loosecoilymedium": {
+      "item_name": "Loose Coily Medium"
+    },
+    "hair_back-n_basic2018loosecoilylong": {
+      "item_name": "Loose Coily Long"
+    },
+    "hair_back-n_basic2018longwavytopknot": {
+      "item_name": "Long Wavy Half Bun"
+    },
+    "hair_back-n_basic2018longstraighthalfpony": {
+      "item_name": "Half Pony"
+    },
+    "hair_back-n_basic2018dreadsmedium": {
+      "item_name": "Dreads Medium"
+    },
+    "hair_back-n_basic2018dreadslowpony": {
+      "item_name": "Dreads Low Pony"
+    },
+    "hair_back-n_basic2018dreadslong": {
+      "item_name": "Dreads Long"
+    },
+    "hair_back-n_basic2018dreadshighpony": {
+      "item_name": "Dreads High Pony"
+    },
+    "hair_back-n_basic2018dreadsextrashort": {
+      "item_name": "Dreads Extra Short"
+    },
+    "hair_back-n_basic2018dreaddsshort": {
+      "item_name": "Dreads Short"
+    },
+    "hair_back-n_basic2018doubletopknotsback": {
+      "item_name": "Double Top Knots Back"
+    },
+    "hair_back-n_basic2018doublebunslow": {
+      "item_name": "Low Double Buns"
+    },
+    "hair_back-n_basic2018curlyshortlowpigtails": {
+      "item_name": "Curly Short Low Pigtails"
+    },
+    "hair_back-n_basic2018curlyshorthighpigtails": {
+      "item_name": "Curly Short High Pigtails"
+    },
+    "hair_back-n_basic2018curlyshort": {
+      "item_name": "Curly No Bangs Back"
+    },
+    "hair_back-n_basic2018curlymedium": {
+      "item_name": "Curly Medium"
+    },
+    "hair_back-n_basic2018curlylowpony": {
+      "item_name": "Curly Low Pony"
+    },
+    "hair_back-n_basic2018curlylonghighpigtails": {
+      "item_name": "Curly Long High Pigtails"
+    },
+    "hair_back-n_basic2018curlylong": {
+      "item_name": "Curly Long"
+    },
+    "hair_back-n_basic2018curlyhighpony": {
+      "item_name": "Curly High Pony"
+    },
+    "hair_back-n_basic2018curlyextrashort": {
+      "item_name": "Curly Pixie"
+    },
+    "hair_back-n_basic2018coilyshort": {
+      "item_name": "Coily Short"
+    },
+    "hair_back-n_basic2018coilypinappleback": {
+      "item_name": "Coily Pinapple Hair"
+    },
+    "hair_back-n_basic2018coilymedium": {
+      "item_name": "Coily Medium"
+    },
+    "hair_back-n_basic2018coilylowpony": {
+      "item_name": "Coily Low Pony"
+    },
+    "hair_back-n_basic2018coilylong": {
+      "item_name": "Coily Long"
+    },
+    "hair_back-n_basic2018coilyhighpony": {
+      "item_name": "Coily High Pony"
+    },
+    "hair_back-n_basic2018buzzcut": {
+      "item_name": "Bald"
+    },
+    "hair_back-n_basic2018bunlow": {
+      "item_name": "Low Bun"
+    },
+    "hair_back-n_basic2018bunhigh": {
+      "item_name": "High Bun"
+    },
+    "hair_back-n_basic2018afroshort": {
+      "item_name": "Afro Short"
+    },
+    "hair_back-n_basic2018afropompomsback": {
+      "item_name": "Afro Pom Poms Back"
+    },
+    "hair_back-n_basic2018afromedium": {
+      "item_name": "Afro Medium"
+    },
+    "hair_back-n_basic2018afrolong": {
+      "item_name": "Afro Long"
+    },
+    "hair_back-n_basic2018afrohighpony": {
+      "item_name": "Afro High Pony"
+    }
+  },
+  "face_hair": {
+    "face_hair-n_newbasicfacehairupper17": {
+      "item_name": "Chevron Mustache"
+    },
+    "face_hair-n_newbasicfacehairupper16": {
+      "item_name": "Cantinflas"
+    },
+    "face_hair-n_newbasicfacehairupper15": {
+      "item_name": "Walrus Mustache"
+    },
+    "face_hair-n_newbasicfacehairupper14": {
+      "item_name": "Toothbrush Mustache"
+    },
+    "face_hair-n_newbasicfacehairupper13": {
+      "item_name": "Dali Mustache"
+    },
+    "face_hair-n_newbasicfacehairupper08": {
+      "item_name": "The Mario"
+    },
+    "face_hair-n_newbasicfacehairupper07": {
+      "item_name": "Downward English"
+    },
+    "face_hair-n_newbasicfacehairupper06": {
+      "item_name": "Horseshoe"
+    },
+    "face_hair-n_newbasicfacehairupper05": {
+      "item_name": "Handlebar"
+    },
+    "face_hair-n_newbasicfacehairupper04": {
+      "item_name": "Dallas Mustache"
+    },
+    "face_hair-n_newbasicfacehairupper02": {
+      "item_name": "Long Stubble Mustache"
+    },
+    "face_hair-n_newbasicfacehairupper01": {
+      "item_name": "Stubble Mustache"
+    },
+    "face_hair-n_newbasicfacehairlower20": {
+      "item_name": "Small Sideburn"
+    },
+    "face_hair-n_newbasicfacehairlower18": {
+      "item_name": "Mutton Chops"
+    },
+    "face_hair-n_newbasicfacehairlower17": {
+      "item_name": "Long Sideburn"
+    },
+    "face_hair-n_newbasicfacehairlower16": {
+      "item_name": "Full Beard"
+    },
+    "face_hair-n_newbasicfacehairlower13": {
+      "item_name": "Garibaldi Beard"
+    },
+    "face_hair-n_newbasicfacehairlower12": {
+      "item_name": "Shaggy Beard"
+    },
+    "face_hair-n_newbasicfacehairlower09": {
+      "item_name": "Long Goatee"
+    },
+    "face_hair-n_newbasicfacehairlower08b": {
+      "item_name": "Corporate Beard"
+    },
+    "face_hair-n_newbasicfacehairlower07": {
+      "item_name": "Brett Beard"
+    },
+    "face_hair-n_newbasicfacehairlower06": {
+      "item_name": "Pointy Chin Beard"
+    },
+    "face_hair-n_newbasicfacehairlower05": {
+      "item_name": "Soul Patch"
+    },
+    "face_hair-n_newbasicfacehairlower04": {
+      "item_name": "Extended Soul Patch"
+    },
+    "face_hair-n_newbasicfacehairlower02new": {
+      "item_name": "Long Stubble"
+    },
+    "face_hair-n_newbasicfacehairlower02bnew": {
+      "item_name": "Stubble Goatee"
+    },
+    "face_hair-n_newbasicfacehairlower01": {
+      "item_name": "Light Stubble"
+    }
+  },
+  "eyebrow": {
+    "eyebrow-n_basic2018newbrows17": {
+      "item_name": "Wave Brow"
+    },
+    "eyebrow-n_basic2018newbrows16": {
+      "item_name": "Tapered Brow"
+    },
+    "eyebrow-n_basic2018newbrows15": {
+      "item_name": "Straight Brows"
+    },
+    "eyebrow-n_basic2018newbrows14": {
+      "item_name": "Shaved Brow"
+    },
+    "eyebrow-n_basic2018newbrows13": {
+      "item_name": "Eyebrow Piercing"
+    },
+    "eyebrow-n_basic2018newbrows12": {
+      "item_name": "Upset Brows"
+    },
+    "eyebrow-n_basic2018newbrows11": {
+      "item_name": "Angry Brows"
+    },
+    "eyebrow-n_basic2018newbrows10": {
+      "item_name": "Short Brows"
+    },
+    "eyebrow-n_basic2018newbrows09": {
+      "item_name": "Sculpted Brows"
+    },
+    "eyebrow-n_basic2018newbrows08": {
+      "item_name": "Wiggle Brows"
+    },
+    "eyebrow-n_basic2018newbrows07": {
+      "item_name": "Fuzzy Brows"
+    },
+    "eyebrow-n_basic2018newbrows06": {
+      "item_name": "Peaked Brows"
+    },
+    "eyebrow-n_basic2018newbrows05": {
+      "item_name": "Isosceles Brows"
+    },
+    "eyebrow-n_basic2018newbrows04": {
+      "item_name": "Felt Brows"
+    },
+    "eyebrow-n_basic2018newbrows03": {
+      "item_name": "Bracket Brows"
+    },
+    "eyebrow-n_basic2018newbrows02": {
+      "item_name": "Boxy Brows"
+    },
+    "eyebrow-n_basic2018newbrows01": {
+      "item_name": "Angular Brows"
+    },
+    "eyebrow-n_29": {
+      "item_name": "Downturned brows"
+    },
+    "eyebrow-n_27": {
+      "item_name": "Crazy brows"
+    },
+    "eyebrow-n_26": {
+      "item_name": "Dainty brows"
+    },
+    "eyebrow-n_25": {
+      "item_name": "Alien brows"
+    },
+    "eyebrow-n_23": {
+      "item_name": "Model brows"
+    },
+    "eyebrow-n_22": {
+      "item_name": "Demanding brows"
+    },
+    "eyebrow-n_21": {
+      "item_name": "Thin brows"
+    },
+    "eyebrow-n_19": {
+      "item_name": "Demour brows"
+    },
+    "eyebrow-n_18": {
+      "item_name": "Crisp brows"
+    },
+    "eyebrow-n_11": {
+      "item_name": "Dash Brows"
+    },
+    "eyebrow-n_10": {
+      "item_name": "Perfect brows"
+    },
+    "eyebrow-n_08": {
+      "item_name": "Frown brows"
+    },
+    "eyebrow-n_07": {
+      "item_name": "Penciled brows"
+    },
+    "eyebrow-n_06": {
+      "item_name": "Badboy brows"
+    },
+    "eyebrow-n_04": {
+      "item_name": "Sharp brows"
+    },
+    "eyebrow-n_03": {
+      "item_name": "Thick brows"
+    },
+    "eyebrow-n_02": {
+      "item_name": "Crescent brows"
+    },
+    "eyebrow-n_01": {
+      "item_name": "Grandpa brows"
+    }
+  },
+  "eye": {
+    "eye-n_basic2018zanyeyes": {
+      "item_name": "Zany Eyes"
+    },
+    "eye-n_basic2018woaheyes": {
+      "item_name": "Woah Eyes"
+    },
+    "eye-n_basic2018wingedliner": {
+      "item_name": "Winged Eyeliner"
+    },
+    "eye-n_basic2018teardrop": {
+      "item_name": "Tear Drop Eyes"
+    },
+    "eye-n_basic2018starryeye": {
+      "item_name": "Starry Eye"
+    },
+    "eye-n_basic2018squintynude": {
+      "item_name": "Squinty Nude Eye"
+    },
+    "eye-n_basic2018snakeeyes": {
+      "item_name": "Snake Eyes"
+    },
+    "eye-n_basic2018smokeyeye2": {
+      "item_name": "Dark Shadow"
+    },
+    "eye-n_basic2018slantednude": {
+      "item_name": "Slanted Nude Eye"
+    },
+    "eye-n_basic2018redeyes": {
+      "item_name": "Red Eyes"
+    },
+    "eye-n_basic2018pinkshadow2": {
+      "item_name": "Light Shadow"
+    },
+    "eye-n_basic2018nudesquare": {
+      "item_name": "Square Nude Eye"
+    },
+    "eye-n_basic2018nudediamond": {
+      "item_name": "Diamond Nude Eye"
+    },
+    "eye-n_basic2018malesquareupturned": {
+      "item_name": "Upturned Square (masc)"
+    },
+    "eye-n_basic2018malesquaresquint": {
+      "item_name": "Squinty Square (masc)"
+    },
+    "eye-n_basic2018malesquaresleepy": {
+      "item_name": "Sleepy Square (masc)"
+    },
+    "eye-n_basic2018malesquaredroopy": {
+      "item_name": "Droopy Square (masc)"
+    },
+    "eye-n_basic2018malesquare": {
+      "item_name": "Square (masculine)"
+    },
+    "eye-n_basic2018maleroundupturned": {
+      "item_name": "Upturned Round (masc)"
+    },
+    "eye-n_basic2018maleroundsquint": {
+      "item_name": "Squinty Round (masc)"
+    },
+    "eye-n_basic2018maleroundsleepy": {
+      "item_name": "Sleepy Round (masc)"
+    },
+    "eye-n_basic2018malerounddroopy": {
+      "item_name": "Droopy Round (masc)"
+    },
+    "eye-n_basic2018maleround": {
+      "item_name": "Round (masculine)"
+    },
+    "eye-n_basic2018malediamondupturned": {
+      "item_name": "Upturned Diamond (masc)"
+    },
+    "eye-n_basic2018malediamondsquint": {
+      "item_name": "Squinty Diamond (masc)"
+    },
+    "eye-n_basic2018malediamondsleepy": {
+      "item_name": "Sleepy Diamond (masc)"
+    },
+    "eye-n_basic2018malediamonddroopy": {
+      "item_name": "Droopy Diamond (masc)"
+    },
+    "eye-n_basic2018malediamond": {
+      "item_name": "Diamond (masculine)"
+    },
+    "eye-n_basic2018malealmondupturned": {
+      "item_name": "Upturned Almond (masc)"
+    },
+    "eye-n_basic2018malealmondsquint": {
+      "item_name": "Squinty Almond (masc)"
+    },
+    "eye-n_basic2018malealmond": {
+      "item_name": "Almond (masculine)"
+    },
+    "eye-n_basic2018liftedeyes": {
+      "item_name": "Lifted Eyes"
+    },
+    "eye-n_basic2018holloweyes": {
+      "item_name": "Empty Eyes"
+    },
+    "eye-n_basic2018heavymascera": {
+      "item_name": "Heavy Mascara"
+    },
+    "eye-n_basic2018guyliner": {
+      "item_name": "Guy Liner"
+    },
+    "eye-n_basic2018goldshadow2": {
+      "item_name": "Earthy Shadow"
+    },
+    "eye-n_basic2018femalesquareupturned": {
+      "item_name": "Upturned Square (fem)"
+    },
+    "eye-n_basic2018femalesquaresquint": {
+      "item_name": "Squinty Square (fem)"
+    },
+    "eye-n_basic2018femalesquaresleepy": {
+      "item_name": "Sleepy Square (fem)"
+    },
+    "eye-n_basic2018femalesquaredroopy": {
+      "item_name": "Droopy Square (fem)"
+    },
+    "eye-n_basic2018femalesquare": {
+      "item_name": "Square (Feminine)"
+    },
+    "eye-n_basic2018femalesovalsquint": {
+      "item_name": "Squinty Oval (fem)"
+    },
+    "eye-n_basic2018femaleroundupturned": {
+      "item_name": "Upturned Round (fem)"
+    },
+    "eye-n_basic2018femaleroundsleepy": {
+      "item_name": "Sleepy Round (fem)"
+    },
+    "eye-n_basic2018femalerounddroopy": {
+      "item_name": "Droopy Round (fem)"
+    },
+    "eye-n_basic2018femaleround": {
+      "item_name": "Round (feminine)"
+    },
+    "eye-n_basic2018femaleovalslant": {
+      "item_name": "Slanted Oval (fem)"
+    },
+    "eye-n_basic2018femaleovaldroopy": {
+      "item_name": "Droopy Oval (fem)"
+    },
+    "eye-n_basic2018femalediamondupturned": {
+      "item_name": "Upturned Diamond (fem)"
+    },
+    "eye-n_basic2018femalediamondsquint": {
+      "item_name": "Squinty Diamond (fem)"
+    },
+    "eye-n_basic2018femalediamondsleepy": {
+      "item_name": "Sleepy Diamond (fem)"
+    },
+    "eye-n_basic2018femalediamond": {
+      "item_name": "Diamond (Feminine)"
+    },
+    "eye-n_basic2018femalealmoundsquint": {
+      "item_name": "Squinty Almond (fem)"
+    },
+    "eye-n_basic2018femalealmond": {
+      "item_name": "Almond (Feminine)"
+    },
+    "eye-n_basic2018falselashes": {
+      "item_name": "False Eyelashes"
+    },
+    "eye-n_basic2018downturnedoval": {
+      "item_name": "Downturned Oval"
+    },
+    "eye-n_basic2018doublewing": {
+      "item_name": "Double Wing Eyeliner"
+    },
+    "eye-n_basic2018dolleyes": {
+      "item_name": "Doll Eyes"
+    },
+    "eye-n_basic2018doeeyes": {
+      "item_name": "Doe Eyes"
+    },
+    "eye-n_basic2018definedlashes": {
+      "item_name": "Defined Lashes"
+    },
+    "eye-n_basic2018crescent": {
+      "item_name": "Squinty Crescent"
+    },
+    "eye-n_basic2018butterflyeyes": {
+      "item_name": "Butterfly Eyes"
+    },
+    "eye-n_basic2018blockeyes": {
+      "item_name": "Blocky Eyes"
+    },
+    "eye-n_basic2018animeeyes": {
+      "item_name": "Basic Anime Eyes"
+    },
+    "eye-n_basic2018angryeyes": {
+      "item_name": "Angry Eyes"
+    }
+  },
+  "nose": {
+    "nose-n_room22019nosestud": {
+      "item_name": "Nose Stud"
+    },
+    "nose-n_basic2018newnose20": {
+      "item_name": "Dot Nose"
+    },
+    "nose-n_basic2018newnose19": {
+      "item_name": "Freckle Nose"
+    },
+    "nose-n_basic2018newnose18": {
+      "item_name": "Silver Nose Ring"
+    },
+    "nose-n_basic2018newnose17": {
+      "item_name": "Septum Piercing"
+    },
+    "nose-n_basic2018newnose16": {
+      "item_name": "Angular Nose"
+    },
+    "nose-n_basic2018newnose15": {
+      "item_name": "Button Nose"
+    },
+    "nose-n_basic2018newnose14": {
+      "item_name": "Soft Nose"
+    },
+    "nose-n_basic2018newnose13": {
+      "item_name": "Hooked Nose"
+    },
+    "nose-n_basic2018newnose11": {
+      "item_name": "Bean Nose"
+    },
+    "nose-n_basic2018newnose09": {
+      "item_name": "Bulb Nose"
+    },
+    "nose-n_basic2018newnose05": {
+      "item_name": "Straight Nose"
+    },
+    "nose-n_basic2018newnose04": {
+      "item_name": "Pinched Nose"
+    },
+    "nose-n_basic2018newnose03": {
+      "item_name": "Teardrop Nose"
+    },
+    "nose-n_26": {
+      "item_name": "Bubble Nose"
+    },
+    "nose-n_23": {
+      "item_name": "Defined Nose"
+    },
+    "nose-n_19": {
+      "item_name": "Sledge Nose"
+    },
+    "nose-n_12_b": {
+      "item_name": "Sharper Nose"
+    },
+    "nose-n_12": {
+      "item_name": "Sharp Nose"
+    },
+    "nose-n_07_b": {
+      "item_name": "Thicker Nose"
+    },
+    "nose-n_07": {
+      "item_name": "Flared Nose"
+    },
+    "nose-n_03_b": {
+      "item_name": "Ramp Nose"
+    },
+    "nose-n_03": {
+      "item_name": "Slope Nose"
+    },
+    "nose-n_01_b": {
+      "item_name": "Dainty Nose"
+    },
+    "nose-n_01": {
+      "item_name": "Baby Nose"
+    }
+  },
+  "mouth": {
+    "mouth-n_room22019sillymouth": {
+      "item_name": "Silly Mouth"
+    },
+    "mouth-n_basic2018widethinround": {
+      "item_name": "Wide Thin Round Lips"
+    },
+    "mouth-n_basic2018widethinpeaked": {
+      "item_name": "Wide Thin Peaked Lips"
+    },
+    "mouth-n_basic2018widefullround": {
+      "item_name": "Wide Full Round Lips"
+    },
+    "mouth-n_basic2018widefullpeaked": {
+      "item_name": "Wide Full Peaked Lips"
+    },
+    "mouth-n_basic2018toothythinround": {
+      "item_name": "Toothy Thin Round Lips"
+    },
+    "mouth-n_basic2018toothythinpeaked": {
+      "item_name": "Toothy Thin Peaked Lips"
+    },
+    "mouth-n_basic2018toothyfullround": {
+      "item_name": "Toothy Full Round Lips"
+    },
+    "mouth-n_basic2018toothyfullpeaked": {
+      "item_name": "Toothy Full Peaked Lips"
+    },
+    "mouth-n_basic2018puckerthinround": {
+      "item_name": "Puckered Thin Round Lips"
+    },
+    "mouth-n_basic2018puckerthinpeaked": {
+      "item_name": "Puckered Thin Peaked Lips"
+    },
+    "mouth-n_basic2018puckerfullround": {
+      "item_name": "Puckered Full Round Lips"
+    },
+    "mouth-n_basic2018puckerfullpeaked": {
+      "item_name": "Puckered Full Peaked Lips"
+    },
+    "mouth-n_basic2018pillowthinround": {
+      "item_name": "Pillowy Thin Round Lips"
+    },
+    "mouth-n_basic2018pillowthinpeaked": {
+      "item_name": "Pillowy Thin Peaked Lips"
+    },
+    "mouth-n_basic2018pillowfullround": {
+      "item_name": "Pillowy Full Round Lips"
+    },
+    "mouth-n_basic2018pillowfullpeaked": {
+      "item_name": "Pillowy Full Peaked Lips"
+    },
+    "mouth-n_basic2018agapethinground": {
+      "item_name": "Parted Thin Round Lips"
+    },
+    "mouth-n_basic2018agapethingpeaked": {
+      "item_name": "Parted Thin Peaked Lips"
+    },
+    "mouth-n_basic2018agapefullround": {
+      "item_name": "Parted Full Round Lips"
+    },
+    "mouth-n_basic2018agapefullpeaked": {
+      "item_name": "Parted Full Peaked Lips"
+    },
+    "mouth-basic2018yummouth": {
+      "item_name": "Yum! Mouth"
+    },
+    "mouth-basic2018whistlemouth": {
+      "item_name": "Whistle Mouth"
+    },
+    "mouth-basic2018vampteeth": {
+      "item_name": "Vamp Teeth"
+    },
+    "mouth-basic2018upsetmouth": {
+      "item_name": "Upset Mouth"
+    },
+    "mouth-basic2018unimpressed": {
+      "item_name": "Unimpressed Mouth"
+    },
+    "mouth-basic2018tongueout": {
+      "item_name": "Tongue Out Mouth"
+    },
+    "mouth-basic2018thinround": {
+      "item_name": "Basic Round Thin Lips"
+    },
+    "mouth-basic2018thinpeaked": {
+      "item_name": "Basic Peaked Thin Lips"
+    },
+    "mouth-basic2018smugmouth": {
+      "item_name": "Smug Mouth"
+    },
+    "mouth-basic2018smirk": {
+      "item_name": "Smirk Mouth"
+    },
+    "mouth-basic2018poutthinround": {
+      "item_name": "Pout Round Thin Lips"
+    },
+    "mouth-basic2018poutthinpeaked": {
+      "item_name": "Pout Peaked Thin Lips"
+    },
+    "mouth-basic2018poutfullround": {
+      "item_name": "Pout Round Full Lips"
+    },
+    "mouth-basic2018poutfullpeaked": {
+      "item_name": "Pout Peaked Full Lips"
+    },
+    "mouth-basic2018openthinround": {
+      "item_name": "Open Round Thin Lips"
+    },
+    "mouth-basic2018openthinpeaked": {
+      "item_name": "Open Peaked Thin Lips"
+    },
+    "mouth-basic2018openfullround": {
+      "item_name": "Open Round Full Lips"
+    },
+    "mouth-basic2018openfullpeaked": {
+      "item_name": "Open Peaked Full Lips"
+    },
+    "mouth-basic2018lollipop": {
+      "item_name": "Lollipop Mouth"
+    },
+    "mouth-basic2018lippiercing": {
+      "item_name": "Lip Piercing"
+    },
+    "mouth-basic2018grin": {
+      "item_name": "Grin"
+    },
+    "mouth-basic2018fullround": {
+      "item_name": "Basic Round Full Lips"
+    },
+    "mouth-basic2018fullpeaked": {
+      "item_name": "Basic Peaked Full Lips"
+    },
+    "mouth-basic2018downturnedthinround": {
+      "item_name": "Downturn Round Thin Lips"
+    },
+    "mouth-basic2018downturnedthinpeaked": {
+      "item_name": "Downturn Peaked Thin Lips"
+    },
+    "mouth-basic2018downturnedfullround": {
+      "item_name": "Downturn Round Full Lips"
+    },
+    "mouth-basic2018downturnedfullpeaked": {
+      "item_name": "Downturn Peaked Full Lips"
+    },
+    "mouth-basic2018chubbymouth": {
+      "item_name": "Chubby Mouth"
+    },
+    "mouth-basic2018chippermouth": {
+      "item_name": "Chipper Mouth"
+    },
+    "mouth-basic2018charmer": {
+      "item_name": "Charmer Mouth"
+    },
+    "mouth-basic2018bunnyteeth": {
+      "item_name": "Buck Teeth"
+    }
+  }
+}

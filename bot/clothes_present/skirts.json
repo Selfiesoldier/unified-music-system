@@ -1,0 +1,16 @@
+{
+  "skirts": [
+    { "id": "skirt-n_starteritems2018whiteskirt", "item_name": "Basic Skirt - White" },
+    { "id": "skirt-n_starteritems2018blueskirt", "item_name": "Basic Skirt - Blue" },
+    { "id": "skirt-n_starteritems2018blackskirt", "item_name": "Basic Skirt - Black" },
+
+    { "id": "skirt-n_room22019skirtwithsocksplaid", "item_name": "Plaid Skirt With Socks" },
+    { "id": "skirt-n_room22019skirtwithsocksblack", "item_name": "Black Skirt With Socks" },
+
+    { "id": "skirt-n_room12019pleatedskirtpink", "item_name": "Pleated Pink Skirt" },
+    { "id": "skirt-n_room12019pleatedskirtgrey", "item_name": "Pleated Skirt Grey" },
+    { "id": "skirt-n_room12019pleatedskirtblack", "item_name": "Pleated Black Skirt" },
+
+    { "id": "skirt-f_gianttutu", "item_name": "Tutu" }
+  ]
+}

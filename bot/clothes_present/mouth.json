@@ -1,0 +1,172 @@
+{
+  "mouths": [
+    { "id": "mouth-n_room22019sillymouth", "item_name": "Silly Mouth" },
+
+    {
+      "id": "mouth-n_basic2018widethinround",
+      "item_name": "Wide Thin Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018widethinpeaked",
+      "item_name": "Wide Thin Peaked Lips"
+    },
+    {
+      "id": "mouth-n_basic2018widefullround",
+      "item_name": "Wide Full Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018widefullpeaked",
+      "item_name": "Wide Full Peaked Lips"
+    },
+
+    {
+      "id": "mouth-n_basic2018toothythinround",
+      "item_name": "Toothy Thin Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018toothythinpeaked",
+      "item_name": "Toothy Thin Peaked Lips"
+    },
+    {
+      "id": "mouth-n_basic2018toothyfullround",
+      "item_name": "Toothy Full Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018toothyfullpeaked",
+      "item_name": "Toothy Full Peaked Lips"
+    },
+
+    {
+      "id": "mouth-n_basic2018puckerthinround",
+      "item_name": "Puckered Thin Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018puckerthinpeaked",
+      "item_name": "Puckered Thin Peaked Lips"
+    },
+    {
+      "id": "mouth-n_basic2018puckerfullround",
+      "item_name": "Puckered Full Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018puckerfullpeaked",
+      "item_name": "Puckered Full Peaked Lips"
+    },
+
+    {
+      "id": "mouth-n_basic2018pillowthinround",
+      "item_name": "Pillowy Thin Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018pillowthinpeaked",
+      "item_name": "Pillowy Thin Peaked Lips"
+    },
+    {
+      "id": "mouth-n_basic2018pillowfullround",
+      "item_name": "Pillowy Full Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018pillowfullpeaked",
+      "item_name": "Pillowy Full Peaked Lips"
+    },
+
+    {
+      "id": "mouth-n_basic2018agapethinground",
+      "item_name": "Parted Thin Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018agapethingpeaked",
+      "item_name": "Parted Thin Peaked Lips"
+    },
+    {
+      "id": "mouth-n_basic2018agapefullround",
+      "item_name": "Parted Full Round Lips"
+    },
+    {
+      "id": "mouth-n_basic2018agapefullpeaked",
+      "item_name": "Parted Full Peaked Lips"
+    },
+
+    { "id": "mouth-basic2018yummouth", "item_name": "Yum! Mouth" },
+    { "id": "mouth-basic2018whistlemouth", "item_name": "Whistle Mouth" },
+    { "id": "mouth-basic2018vampteeth", "item_name": "Vamp Teeth" },
+    { "id": "mouth-basic2018upsetmouth", "item_name": "Upset Mouth" },
+    { "id": "mouth-basic2018unimpressed", "item_name": "Unimpressed Mouth" },
+    { "id": "mouth-basic2018tongueout", "item_name": "Tongue Out Mouth" },
+
+    { "id": "mouth-basic2018thinround", "item_name": "Basic Round Thin Lips" },
+    {
+      "id": "mouth-basic2018thinpeaked",
+      "item_name": "Basic Peaked Thin Lips"
+    },
+
+    { "id": "mouth-basic2018smugmouth", "item_name": "Smug Mouth" },
+    { "id": "mouth-basic2018smirk", "item_name": "Smirk Mouth" },
+
+    {
+      "id": "mouth-basic2018poutthinround",
+      "item_name": "Pout Round Thin Lips"
+    },
+    {
+      "id": "mouth-basic2018poutthinpeaked",
+      "item_name": "Pout Peaked Thin Lips"
+    },
+    {
+      "id": "mouth-basic2018poutfullround",
+      "item_name": "Pout Round Full Lips"
+    },
+    {
+      "id": "mouth-basic2018poutfullpeaked",
+      "item_name": "Pout Peaked Full Lips"
+    },
+
+    {
+      "id": "mouth-basic2018openthinround",
+      "item_name": "Open Round Thin Lips"
+    },
+    {
+      "id": "mouth-basic2018openthinpeaked",
+      "item_name": "Open Peaked Thin Lips"
+    },
+    {
+      "id": "mouth-basic2018openfullround",
+      "item_name": "Open Round Full Lips"
+    },
+    {
+      "id": "mouth-basic2018openfullpeaked",
+      "item_name": "Open Peaked Full Lips"
+    },
+
+    { "id": "mouth-basic2018lollipop", "item_name": "Lollipop Mouth" },
+    { "id": "mouth-basic2018lippiercing", "item_name": "Lip Piercing" },
+    { "id": "mouth-basic2018grin", "item_name": "Grin" },
+
+    { "id": "mouth-basic2018fullround", "item_name": "Basic Round Full Lips" },
+    {
+      "id": "mouth-basic2018fullpeaked",
+      "item_name": "Basic Peaked Full Lips"
+    },
+
+    {
+      "id": "mouth-basic2018downturnedthinround",
+      "item_name": "Downturn Round Thin Lips"
+    },
+    {
+      "id": "mouth-basic2018downturnedthinpeaked",
+      "item_name": "Downturn Peaked Thin Lips"
+    },
+    {
+      "id": "mouth-basic2018downturnedfullround",
+      "item_name": "Downturn Round Full Lips"
+    },
+    {
+      "id": "mouth-basic2018downturnedfullpeaked",
+      "item_name": "Downturn Peaked Full Lips"
+    },
+
+    { "id": "mouth-basic2018chubbymouth", "item_name": "Chubby Mouth" },
+    { "id": "mouth-basic2018chippermouth", "item_name": "Chipper Mouth" },
+    { "id": "mouth-basic2018charmer", "item_name": "Charmer Mouth" },
+    { "id": "mouth-basic2018bunnyteeth", "item_name": "Buck Teeth" }
+  ]
+}

@@ -1,0 +1,34 @@
+{
+  "shoes": [
+    { "id": "shoes-n_whitedans", "item_name": "White Dans" },
+
+    { "id": "shoes-n_starteritems2019flatswhite", "item_name": "White Flats" },
+    { "id": "shoes-n_starteritems2019flatspink", "item_name": "Pink Flats" },
+    { "id": "shoes-n_starteritems2019flatsblack", "item_name": "Black Flats" },
+
+    { "id": "shoes-n_starteritems2018conversewhite", "item_name": "White Converse" },
+
+    { "id": "shoes-n_room32019socksneakersgrey", "item_name": "Grey Sock Sneakers" },
+    { "id": "shoes-n_room32019socksneakersblack", "item_name": "Black Sock Sneakers" },
+    { "id": "shoes-n_room32019chunkysneaks", "item_name": "White Chunky Sneaks" },
+
+    { "id": "shoes-n_room22019kneehighsblack", "item_name": "Black Knee High Boots" },
+    { "id": "shoes-n_room22019heelspink", "item_name": "Basic Pink Heels" },
+
+    { "id": "shoes-n_room12019sneakerspink", "item_name": "Basic Pink Sneakers" },
+    { "id": "shoes-n_room12019sneakersblack", "item_name": "Basic Black Sneakers" },
+    { "id": "shoes-n_room12019sandalsgrey", "item_name": "Basic Grey Sandals" },
+    { "id": "shoes-n_room12019hightopsred", "item_name": "Red High Tops" },
+    { "id": "shoes-n_room12019hightopsblack", "item_name": "Black High Tops" },
+    { "id": "shoes-n_room12019bootsblack", "item_name": "Basic Black Boots" },
+
+    { "id": "shoes-n_platformsneakerblack", "item_name": "Black Platform Sneakers" },
+
+    { "id": "shoes-n_drstompsbootsyellow", "item_name": "Yellow Dr. Stomp Boots" },
+    { "id": "shoes-n_drstompsbootswhite", "item_name": "White Dr. Stomp Boots" },
+    { "id": "shoes-n_drstompsbootscherry", "item_name": "Cherry Dr. Stomp Boots" },
+
+    { "id": "shoes-n_converse_black", "item_name": "Black Converse" },
+    { "id": "shoes-n_converse", "item_name": "Converse Sneakers" }
+  ]
+}

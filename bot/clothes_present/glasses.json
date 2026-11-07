@@ -1,0 +1,19 @@
+{
+  "glasses": [
+    { "id": "glasses-n_starteritems201roundframesbrown", "item_name": "Round Frames - Brown" },
+    { "id": "glasses-n_starteritems2019squareframesbrown", "item_name": "Square Frames - Brown" },
+    { "id": "glasses-n_starteritems2019squareframesblack", "item_name": "Square Frames - Black" },
+    { "id": "glasses-n_starteritems2019roundframesblack", "item_name": "Round Frames - Black" },
+
+    { "id": "glasses-n_room32019smallshades", "item_name": "Tiny Shades" },
+    { "id": "glasses-n_room32019shieldsunglassesblack", "item_name": "Black Shield Glasses" },
+    { "id": "glasses-n_room32019aviatorshieldsyellow", "item_name": "Yellow Aviator Shields" },
+
+    { "id": "glasses-n_room22019aviators", "item_name": "Basic Aviators" },
+
+    { "id": "glasses-n_room12019halfrimwhite", "item_name": "White Half Rim Glasses" },
+    { "id": "glasses-n_room12019halfrimblack", "item_name": "Black Half Rim Glasses" },
+    { "id": "glasses-n_room12019circleshades", "item_name": "Plain Black Circular Shades" },
+    { "id": "glasses-n_room12019circleframes", "item_name": "Black Circular Frames" }
+  ]
+}

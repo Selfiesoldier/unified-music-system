@@ -1,0 +1,133 @@
+{
+  "gloves": {
+    "gloves-n_room32019basketball": {
+      "item_name": "Standard Basketball"
+    }
+  },
+  "glasses": {
+    "glasses-n_starteritems201roundframesbrown": {
+      "item_name": "Round Frames - Brown"
+    },
+    "glasses-n_starteritems2019squareframesbrown": {
+      "item_name": "Square Frames - Brown"
+    },
+    "glasses-n_starteritems2019squareframesblack": {
+      "item_name": "Square Frames - Black"
+    },
+    "glasses-n_starteritems2019roundframesblack": {
+      "item_name": "Round Frames - Black"
+    },
+    "glasses-n_room32019smallshades": {
+      "item_name": "Tiny Shades"
+    },
+    "glasses-n_room32019shieldsunglassesblack": {
+      "item_name": "Black Shield Glasses"
+    },
+    "glasses-n_room32019aviatorshieldsyellow": {
+      "item_name": "Yellow Aviator Shields "
+    },
+    "glasses-n_room22019aviators": {
+      "item_name": "Basic Aviators"
+    },
+    "glasses-n_room12019halfrimwhite": {
+      "item_name": "White Half Rim Glasses"
+    },
+    "glasses-n_room12019halfrimblack": {
+      "item_name": "Black Half Rim Glasses"
+    },
+    "glasses-n_room12019circleshades": {
+      "item_name": "Plain Black Circular Shades"
+    },
+    "glasses-n_room12019circleframes": {
+      "item_name": "Black Circular Frames"
+    }
+  },
+  "bags": {
+    "bag-n_room32019sweaterwrapblack": {
+      "item_name": "Black Sweater Wrap"
+    },
+    "bag-n_room32019sidebagyellow": {
+      "item_name": "Yellow Mini Pack"
+    },
+    "bag-n_room32019sidebagblack": {
+      "item_name": "Black Mini Pack"
+    },
+    "bag-n_room32019flannelwrapyellow": {
+      "item_name": "Yellow Flannel Wrap"
+    },
+    "bag-n_room32019fannypackblack": {
+      "item_name": "Black Fanny Pack"
+    },
+    "bag-n_room12019purse": {
+      "item_name": "Plain Black Purse"
+    },
+    "bag-n_room12019messengerbag": {
+      "item_name": "Plain Black Messenger Bag"
+    },
+    "bag-n_room12019backpack": {
+      "item_name": "Basic Black Backpack"
+    },
+    "bag-n_SCSpring2018sunflowerpurse": {
+      "item_name": "Sunflower Purse"
+    }
+  },
+  "earrings": {
+    "earrings-n_room32019chainearrings": {
+      "item_name": "Chain Earrings"
+    },
+    "earrings-n_room12019goldhoops": {
+      "item_name": "Gold Hoops"
+    }
+  },
+  "necklaces": {
+    "necklace-n_room32019locknecklace": {
+      "item_name": "Padlock Necklace"
+    },
+    "necklace-n_room22019scarfgrey": {
+      "item_name": "Grey Fashion Scarf"
+    },
+    "necklace-n_room22019scarfblack": {
+      "item_name": "Black Fashion Scarf"
+    },
+    "necklace-n_room12019necklace": {
+      "item_name": "Gold Necklace"
+    },
+    "necklace-n_room12019chain": {
+      "item_name": "Plain Gold Chain"
+    },
+    "necklace-n_SCSpring2018camera": {
+      "item_name": "Retro Camera"
+    },
+    "necklace-n_12": {
+      "item_name": "Goth Necklace"
+    }
+  },
+  "watches": {
+    "watch-n_room32019blackwatch": {
+      "item_name": "Classic Black Watch"
+    },
+    "watch-n_room12019watch": {
+      "item_name": "Basic Watch"
+    }
+  },
+  "handbags": {
+    "handbag-n_room32019skateboardxo": {
+      "item_name": "XOXO Skateboard"
+    },
+    "handbag-n_room32019skateboardcamo": {
+      "item_name": "Camo Skateboard"
+    },
+    "handbag-n_room22019sucker": {
+      "item_name": "Red Sucker"
+    },
+    "handbag-n_room22019rose": {
+      "item_name": "White Rose"
+    },
+    "handbag-n_room22019banana": {
+      "item_name": "Banana"
+    },
+    "handbag-n_cupcake2019cupcakebear": {
+      "item_name": "Cupcake Bear"
+    }
+  }
+}

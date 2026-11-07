@@ -1,0 +1,15 @@
+{
+  "bags": [
+    { "id": "bag-n_room32019sweaterwrapblack", "item_name": "Black Sweater Wrap" },
+    { "id": "bag-n_room32019sidebagyellow", "item_name": "Yellow Mini Pack" },
+    { "id": "bag-n_room32019sidebagblack", "item_name": "Black Mini Pack" },
+    { "id": "bag-n_room32019flannelwrapyellow", "item_name": "Yellow Flannel Wrap" },
+    { "id": "bag-n_room32019fannypackblack", "item_name": "Black Fanny Pack" },
+
+    { "id": "bag-n_room12019purse", "item_name": "Plain Black Purse" },
+    { "id": "bag-n_room12019messengerbag", "item_name": "Plain Black Messenger Bag" },
+    { "id": "bag-n_room12019backpack", "item_name": "Basic Black Backpack" },
+
+    { "id": "bag-n_SCSpring2018sunflowerpurse", "item_name": "Sunflower Purse" }
+  ]
+}

@@ -1,0 +1,13 @@
+{
+  "necklaces": [
+    { "id": "necklace-n_room32019locknecklace", "item_name": "Padlock Necklace" },
+    { "id": "necklace-n_room22019scarfgrey", "item_name": "Grey Fashion Scarf" },
+    { "id": "necklace-n_room22019scarfblack", "item_name": "Black Fashion Scarf" },
+
+    { "id": "necklace-n_room12019necklace", "item_name": "Gold Necklace" },
+    { "id": "necklace-n_room12019chain", "item_name": "Plain Gold Chain" },
+
+    { "id": "necklace-n_SCSpring2018camera", "item_name": "Retro Camera" },
+    { "id": "necklace-n_12", "item_name": "Goth Necklace" }
+  ]
+}

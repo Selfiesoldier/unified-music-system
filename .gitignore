@@ -1,0 +1,16 @@
+node_modules/
+__pycache__/
+*.py[cod]
+*$py.class
+*.log
+.env
+.env.*
+!.env.example
+cache/
+main-server/cache/
+audio-server/cache/
+telegram_vault.json
+telegram_vault_backup.json
+*.tmp
+*.bak
+*.exe

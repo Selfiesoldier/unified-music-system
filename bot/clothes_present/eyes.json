@@ -1,0 +1,80 @@
+{
+  "eyes": [
+    { "id": "eye-n_basic2018zanyeyes", "item_name": "Zany Eyes" },
+    { "id": "eye-n_basic2018woaheyes", "item_name": "Woah Eyes" },
+    { "id": "eye-n_basic2018wingedliner", "item_name": "Winged Eyeliner" },
+    { "id": "eye-n_basic2018teardrop", "item_name": "Tear Drop Eyes" },
+    { "id": "eye-n_basic2018starryeye", "item_name": "Starry Eye" },
+    { "id": "eye-n_basic2018squintynude", "item_name": "Squinty Nude Eye" },
+    { "id": "eye-n_basic2018snakeeyes", "item_name": "Snake Eyes" },
+    { "id": "eye-n_basic2018smokeyeye2", "item_name": "Dark Shadow" },
+    { "id": "eye-n_basic2018slantednude", "item_name": "Slanted Nude Eye" },
+    { "id": "eye-n_basic2018redeyes", "item_name": "Red Eyes" },
+    { "id": "eye-n_basic2018pinkshadow2", "item_name": "Light Shadow" },
+    { "id": "eye-n_basic2018nudesquare", "item_name": "Square Nude Eye" },
+    { "id": "eye-n_basic2018nudediamond", "item_name": "Diamond Nude Eye" },
+
+    { "id": "eye-n_basic2018malesquareupturned", "item_name": "Upturned Square (masc)" },
+    { "id": "eye-n_basic2018malesquaresquint", "item_name": "Squinty Square (masc)" },
+    { "id": "eye-n_basic2018malesquaresleepy", "item_name": "Sleepy Square (masc)" },
+    { "id": "eye-n_basic2018malesquaredroopy", "item_name": "Droopy Square (masc)" },
+    { "id": "eye-n_basic2018malesquare", "item_name": "Square (masculine)" },
+
+    { "id": "eye-n_basic2018maleroundupturned", "item_name": "Upturned Round (masc)" },
+    { "id": "eye-n_basic2018maleroundsquint", "item_name": "Squinty Round (masc)" },
+    { "id": "eye-n_basic2018maleroundsleepy", "item_name": "Sleepy Round (masc)" },
+    { "id": "eye-n_basic2018malerounddroopy", "item_name": "Droopy Round (masc)" },
+    { "id": "eye-n_basic2018maleround", "item_name": "Round (masculine)" },
+
+    { "id": "eye-n_basic2018malediamondupturned", "item_name": "Upturned Diamond (masc)" },
+    { "id": "eye-n_basic2018malediamondsquint", "item_name": "Squinty Diamond (masc)" },
+    { "id": "eye-n_basic2018malediamondsleepy", "item_name": "Sleepy Diamond (masc)" },
+    { "id": "eye-n_basic2018malediamonddroopy", "item_name": "Droopy Diamond (masc)" },
+    { "id": "eye-n_basic2018malediamond", "item_name": "Diamond (masculine)" },
+
+    { "id": "eye-n_basic2018malealmondupturned", "item_name": "Upturned Almond (masc)" },
+    { "id": "eye-n_basic2018malealmondsquint", "item_name": "Squinty Almond (masc)" },
+    { "id": "eye-n_basic2018malealmond", "item_name": "Almond (masculine)" },
+
+    { "id": "eye-n_basic2018liftedeyes", "item_name": "Lifted Eyes" },
+    { "id": "eye-n_basic2018holloweyes", "item_name": "Empty Eyes" },
+    { "id": "eye-n_basic2018heavymascera", "item_name": "Heavy Mascara" },
+    { "id": "eye-n_basic2018guyliner", "item_name": "Guy Liner" },
+    { "id": "eye-n_basic2018goldshadow2", "item_name": "Earthy Shadow" },
+
+    { "id": "eye-n_basic2018femalesquareupturned", "item_name": "Upturned Square (fem)" },
+    { "id": "eye-n_basic2018femalesquaresquint", "item_name": "Squinty Square (fem)" },
+    { "id": "eye-n_basic2018femalesquaresleepy", "item_name": "Sleepy Square (fem)" },
+    { "id": "eye-n_basic2018femalesquaredroopy", "item_name": "Droopy Square (fem)" },
+    { "id": "eye-n_basic2018femalesquare", "item_name": "Square (Feminine)" },
+
+    { "id": "eye-n_basic2018femalesovalsquint", "item_name": "Squinty Oval (fem)" },
+    { "id": "eye-n_basic2018femaleroundupturned", "item_name": "Upturned Round (fem)" },
+    { "id": "eye-n_basic2018femaleroundsleepy", "item_name": "Sleepy Round (fem)" },
+    { "id": "eye-n_basic2018femalerounddroopy", "item_name": "Droopy Round (fem)" },
+    { "id": "eye-n_basic2018femaleround", "item_name": "Round (feminine)" },
+
+    { "id": "eye-n_basic2018femaleovalslant", "item_name": "Slanted Oval (fem)" },
+    { "id": "eye-n_basic2018femaleovaldroopy", "item_name": "Droopy Oval (fem)" },
+
+    { "id": "eye-n_basic2018femalediamondupturned", "item_name": "Upturned Diamond (fem)" },
+    { "id": "eye-n_basic2018femalediamondsquint", "item_name": "Squinty Diamond (fem)" },
+    { "id": "eye-n_basic2018femalediamondsleepy", "item_name": "Sleepy Diamond (fem)" },
+    { "id": "eye-n_basic2018femalediamond", "item_name": "Diamond (Feminine)" },
+
+    { "id": "eye-n_basic2018femalealmoundsquint", "item_name": "Squinty Almond (fem)" },
+    { "id": "eye-n_basic2018femalealmond", "item_name": "Almond (Feminine)" },
+
+    { "id": "eye-n_basic2018falselashes", "item_name": "False Eyelashes" },
+    { "id": "eye-n_basic2018downturnedoval", "item_name": "Downturned Oval" },
+    { "id": "eye-n_basic2018doublewing", "item_name": "Double Wing Eyeliner" },
+    { "id": "eye-n_basic2018dolleyes", "item_name": "Doll Eyes" },
+    { "id": "eye-n_basic2018doeeyes", "item_name": "Doe Eyes" },
+    { "id": "eye-n_basic2018definedlashes", "item_name": "Defined Lashes" },
+    { "id": "eye-n_basic2018crescent", "item_name": "Squinty Crescent" },
+    { "id": "eye-n_basic2018butterflyeyes", "item_name": "Butterfly Eyes" },
+    { "id": "eye-n_basic2018blockeyes", "item_name": "Blocky Eyes" },
+    { "id": "eye-n_basic2018animeeyes", "item_name": "Basic Anime Eyes" },
+    { "id": "eye-n_basic2018angryeyes", "item_name": "Angry Eyes" }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "handbags": [
+    { "id": "handbag-n_room32019skateboardxo", "item_name": "XOXO Skateboard" },
+    { "id": "handbag-n_room32019skateboardcamo", "item_name": "Camo Skateboard" },
+    { "id": "handbag-n_room22019sucker", "item_name": "Red Sucker" },
+    { "id": "handbag-n_room22019rose", "item_name": "White Rose" },
+    { "id": "handbag-n_room22019banana", "item_name": "Banana" },
+    { "id": "handbag-n_cupcake2019cupcakebear", "item_name": "Cupcake Bear" }
+  ]
+}

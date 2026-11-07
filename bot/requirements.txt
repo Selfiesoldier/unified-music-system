@@ -1,0 +1,11 @@
+# Highrise Bot SDK
+highrise-bot-sdk==25.1.0
+
+# Async HTTP client (compatible with typing_extensions constraint)
+aiohttp>=3.8.0,<3.10.0
+
+# YouTube audio downloader (for music features)
+psutil
+
+# Environment variable management
+python-dotenv

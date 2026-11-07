@@ -1,0 +1,80 @@
+{
+  "casual_white": {
+    "shirt": "shirt-n_starteritems2019maletshirtwhite",
+    "pants": "pants-n_starteritems2019cuffedjeansblue",
+    "shoes": "shoes-n_starteritems2018conversewhite"
+  },
+  "casual_black": {
+    "shirt": "shirt-n_starteritems2019maletshirtblack",
+    "pants": "pants-n_starteritems2019cuffedjeansblack",
+    "shoes": "shoes-n_whitedans"
+  },
+  "street_style": {
+    "shirt": "shirt-n_2016fallblackkknottedtee",
+    "pants": "pants-n_room12019blackacidwashjeans",
+    "shoes": "shoes-n_platformsneakerblack",
+    "bag": "bag-n_room32019sidebagblack"
+  },
+  "sporty_red": {
+    "shirt": "shirt-n_room32019hoodiered",
+    "pants": "pants-n_room32019baggytrackpantsred",
+    "shoes": "shoes-n_room12019hightopsred"
+  },
+  "sporty_casual": {
+    "shirt": "shirt-n_room32019longlineteesweatshirtgrey",
+    "pants": "pants-n_starteritems2019cuffedshortsblack",
+    "shoes": "shoes-n_room32019socksneakersgrey"
+  },
+  "classic_denim": {
+    "shirt": "shirt-n_room22109denimjacket",
+    "pants": "pants-n_starteritems2019cuffedjeansblue",
+    "shoes": "shoes-n_starteritems2018conversewhite"
+  },
+  "streetwear_green": {
+    "shirt": "shirt-n_room32019malepuffyjacketgreen",
+    "pants": "pants-n_room32019longshortswithsocksblack",
+    "shoes": "shoes-n_room12019hightopsblack"
+  },
+  "formal_black": {
+    "shirt": "shirt-n_room12019buttondownblack",
+    "pants": "pants-n_room12019formalslacksblack",
+    "shoes": "shoes-n_room12019bootsblack",
+    "watch": "watch-n_room32019blackwatch"
+  },
+  "summer_vibes": {
+    "shirt": "shirt-n_SCSpring2018flowershirt",
+    "pants": "pants-n_starteritems2019mensshortswhite",
+    "shoes": "shoes-n_room12019sandalsgrey"
+  },
+  "edgy_punk": {
+    "shirt": "shirt-f_punklace",
+    "pants": "pants-n_room12019rippedpantsblack",
+    "shoes": "shoes-n_drstompsbootscherry",
+    "glasses": "glasses-n_room32019smallshades"
+  },
+  "cozy_sweater": {
+    "shirt": "shirt-n_room12019sweaterwithbuttondowngrey",
+    "pants": "pants-n_starteritems2019cuffedjeansblack",
+    "shoes": "shoes-n_room12019bootsblack"
+  },
+  "athletic_camo": {
+    "shirt": "shirt-n_room32019jerseywhite",
+    "pants": "pants-n_room22019techpantscamo",
+    "shoes": "shoes-n_room32019chunkysneaks"
+  },
+  "vintage_jersey": {
+    "shirt": "shirt-n_room32019jerseywhite",
+    "pants": "pants-n_room12019formalslackskhaki",
+    "shoes": "shoes-n_room12019sneakersblack"
+  },
+  "elegant_pink": {
+    "shirt": "shirt-n_room22019bratoppink",
+    "skirt": "skirt-n_room12019pleatedskirtpink",
+    "shoes": "shoes-n_room22019heelspink"
+  },
+  "simple_basic": {
+    "shirt": "shirt-n_starteritems2019tankwhite",
+    "pants": "pants-n_starteritems2019cuffedjeansblue",
+    "shoes": "shoes-n_starteritems2019flatsblack"
+  }
+}

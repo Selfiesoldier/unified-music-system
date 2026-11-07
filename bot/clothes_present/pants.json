@@ -1,0 +1,45 @@
+{
+  "pants": [
+    { "id": "shorts-f_pantyhoseshortsnavy", "item_name": "Navy Shorts w/ Pantyhose" },
+
+    { "id": "pants-n_starteritems2019mensshortswhite", "item_name": "Basic Shorts - White" },
+    { "id": "pants-n_starteritems2019mensshortsblue", "item_name": "Basic Shorts - Blue" },
+    { "id": "pants-n_starteritems2019mensshortsblack", "item_name": "Basic Shorts - Black" },
+
+    { "id": "pants-n_starteritems2019cuffedshortswhite", "item_name": "Cuffed Shorts - White" },
+    { "id": "pants-n_starteritems2019cuffedshortsblue", "item_name": "Cuffed Shorts - Blue" },
+    { "id": "pants-n_starteritems2019cuffedshortsblack", "item_name": "Cuffed Shorts - Black" },
+
+    { "id": "pants-n_starteritems2019cuffedjeanswhite", "item_name": "Cuffed Jeans - White" },
+    { "id": "pants-n_starteritems2019cuffedjeansblue", "item_name": "Cuffed Jeans - Blue" },
+    { "id": "pants-n_starteritems2019cuffedjeansblack", "item_name": "Cuffed Jeans - Black" },
+
+    { "id": "pants-n_room32019rippedpantswhite", "item_name": "Ripped White Jeans" },
+    { "id": "pants-n_room32019rippedpantsblue", "item_name": "Ripped Blue Jeans" },
+
+    { "id": "pants-n_room32019longtrackshortscamo", "item_name": "Camo Track Shorts" },
+    { "id": "pants-n_room32019longshortswithsocksgrey", "item_name": "Grey Long Shorts" },
+    { "id": "pants-n_room32019longshortswithsocksblack", "item_name": "Black Long Shorts" },
+
+    { "id": "pants-n_room32019highwasittrackshortsblack", "item_name": "Short Black Track Shorts" },
+
+    { "id": "pants-n_room32019baggytrackpantsred", "item_name": "Red Baggy Trackpants" },
+    { "id": "pants-n_room32019baggytrackpantsgreycamo", "item_name": "Grey Camo Baggy Trackpants" },
+
+    { "id": "pants-n_room22019undiespink", "item_name": "Pink Undies" },
+    { "id": "pants-n_room22019undiesblack", "item_name": "Black Undies" },
+
+    { "id": "pants-n_room22019techpantscamo", "item_name": "Camo Tech Pants" },
+    { "id": "pants-n_room22019shortcutoffsdenim", "item_name": "Short Denim Cut-Offs" },
+    { "id": "pants-n_room22019longcutoffsdenim", "item_name": "Denim Cut-Offs" },
+
+    { "id": "pants-n_room12019rippedpantsblue", "item_name": "Ripped Blue Denim" },
+    { "id": "pants-n_room12019rippedpantsblack", "item_name": "Ripped Black Denim" },
+
+    { "id": "pants-n_room12019formalslackskhaki", "item_name": "Khaki Formal Slacks" },
+    { "id": "pants-n_room12019formalslacksblack", "item_name": "Plain Black Formal Slacks" },
+
+    { "id": "pants-n_room12019blackacidwashjeans", "item_name": "Plain Black Acid Wash Jeans" },
+    { "id": "pants-n_2016fallgreyacidwashjeans", "item_name": "Grey Acid Wash" }
+  ]
+}
