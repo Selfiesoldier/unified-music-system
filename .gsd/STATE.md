@@ -3,25 +3,24 @@
 **Milestone:** Milestone 2: Strict 100% FFmpeg-Free Audio Server Fleet  
 **Phase:** 7 - Upstream Speech & TTS Normalization Pipeline  
 **Status:** ready  
-**Plan:** Not yet planned  
+**Plan:** Plan 7.1: Upstream Speech & TTS Normalization & Pre-Transcoding in Central Controller  
 
 ## Current Position
 - **Milestone:** Milestone 2: Strict 100% FFmpeg-Free Audio Server Fleet
-- **Phase:** Phase 6 Complete & Verified (10/10 must-haves verified in `.gsd/phases/6/VERIFICATION.md`)
-- **Current Phase:** Phase 7 (Upstream Speech & TTS Normalization Pipeline)
-- **Status:** Phase 6 verified and deployed to production fleet; ready to plan Phase 7.
+- **Phase:** Phase 7 (Upstream Speech & TTS Normalization Pipeline)
+- **Status:** Plans created and verified by checker, ready for execution.
+
+## Plans Created for Phase 7
+- `01-PLAN.md` | wave 1 | 2 tasks | Upstream Speech & TTS Normalization & Pre-Transcoding in Central Controller
+- `02-PLAN.md` | wave 2 | 2 tasks | Central Controller Download & Cache 96kbps CBR Normalization Pipeline
+- `03-PLAN.md` | wave 3 | 2 tasks | End-to-End Normalization Verification, Live Fleet Handshake & Process Audit
 
 ## Completed Phases
-- **Phase 6:** Audio Server FFmpeg Purge & Pure Byte-Stream Engine
-  - `01-PLAN.md` (Wave 1): Static Pre-Rendered Silence Loop & Embedded Frame Fallback ✅
-  - `02-PLAN.md` (Wave 2): Audio Server FFmpeg Purge & ffmpegHelper Removal ✅
-  - `03-PLAN.md` (Wave 3): Strict Byte-Header Rejection for Non-96k MP3 Input ✅
-  - `VERIFICATION.md`: 10/10 must-haves passed ✅
-  - Live deployment to Room 1 (`00f50ae1`) and Room 2 (`4c1b3907`) confirmed ✅
+- **Phase 6:** Audio Server FFmpeg Purge & Pure Byte-Stream Engine (Verified 10/10 must-haves, deployed to Room 1 & Room 2) ✅
 
 ## Next Steps
-1. Plan Phase 7 (`/plan 7`): Upstream Speech & TTS Normalization Pipeline.
-2. Ensure Central Controller and Cloud Workers pre-transcode all TTS and audio to strict 96k CBR 44.1kHz stereo MP3 before invoking Audio Servers.
+1. Execute Wave 1: `/execute 7` (starting with `01-PLAN.md`).
+2. Proceed through Wave 2 (`02-PLAN.md`) and Wave 3 (`03-PLAN.md`).
 
 ## Blockers
 None. All services operational and green.
