@@ -229,6 +229,14 @@ async function generateAndNormalizeTts(text, lang = 'en') {
     const clean = (text || '').slice(0, 200).trim();
     if (!clean) return null;
 
+    // 🔒 STRICT RULE: TTS is SOLELY produced by the Termux Residential Bridge.
+    // If the Termux bridge is unavailable or offline, NO TTS is played.
+    const isBridgeAlive = Boolean(activeResidentialBridgeUrl && (Date.now() - lastResidentialBridgeHeartbeat < 120000));
+    if (!isBridgeAlive) {
+      console.log(`🔇 [TTS] Termux residential bridge is unavailable — skipping TTS announcement entirely per architectural rule.`);
+      return null;
+    }
+
     const hash = crypto.createHash('md5').update(`${clean}_${lang || 'en'}`).digest('hex').slice(0, 16);
     const ttsFile = path.join(CACHE_DIR, `tts_${hash}.mp3`);
 
@@ -246,47 +254,23 @@ async function generateAndNormalizeTts(text, lang = 'en') {
       } catch (_) {}
     }
 
-    let mp3Buffer = null;
+    // Solely fetch from Termux Residential Bridge
+    const bridgeUrl = `${activeResidentialBridgeUrl}/tts?text=${encodeURIComponent(clean)}&lang=${encodeURIComponent(lang || 'en')}`;
+    console.log(`🎙️ [TTS] Requesting speech solely from Termux Residential Bridge: "${clean.slice(0, 40)}..."`);
+    const bridgeRes = await fetch(bridgeUrl, {
+      signal: AbortSignal.timeout(12000)
+    });
 
-    // 1. Fetch pre-normalized 96kbps CBR MP3 from dedicated Download Worker (runs FFmpeg on worker node)
-    if (DOWNLOAD_WORKER_URL) {
-      try {
-        const workerRes = await fetch(`${DOWNLOAD_WORKER_URL}/tts?text=${encodeURIComponent(clean)}&lang=${encodeURIComponent(lang || 'en')}`, {
-          signal: AbortSignal.timeout(12000)
-        });
-        if (workerRes.ok) {
-          const arrayBuf = await workerRes.arrayBuffer();
-          const buf = Buffer.from(arrayBuf);
-          if (buf.length > 500 && is96kCbrMp3Buffer(buf)) {
-            mp3Buffer = buf;
-          }
-        }
-      } catch (workerErr) {
-        console.warn('⚠️ [TTS] Download Worker TTS fetch failed, trying residential bridge:', workerErr.message);
-      }
+    if (!bridgeRes.ok) {
+      console.warn(`⚠️ [TTS] Termux residential bridge returned HTTP ${bridgeRes.status} for speech — skipping TTS.`);
+      return null;
     }
 
-    // 2. Fallback to Residential Bridge (Android Termux)
-    const isBridgeAlive = Boolean(activeResidentialBridgeUrl && (Date.now() - lastResidentialBridgeHeartbeat < 120000));
-    if (!mp3Buffer && isBridgeAlive) {
-      try {
-        const bridgeRes = await fetch(`${activeResidentialBridgeUrl}/tts?text=${encodeURIComponent(clean)}&lang=${encodeURIComponent(lang || 'en')}`, {
-          signal: AbortSignal.timeout(10000)
-        });
-        if (bridgeRes.ok) {
-          const arrayBuf = await bridgeRes.arrayBuffer();
-          const buf = Buffer.from(arrayBuf);
-          if (buf.length > 500 && is96kCbrMp3Buffer(buf)) {
-            mp3Buffer = buf;
-          }
-        }
-      } catch (bridgeErr) {
-        console.warn('⚠️ [TTS] Residential bridge TTS fetch failed:', bridgeErr.message);
-      }
-    }
+    const arrayBuf = await bridgeRes.arrayBuffer();
+    const mp3Buffer = Buffer.from(arrayBuf);
 
-    if (!mp3Buffer) {
-      console.warn('⚠️ [TTS] Could not obtain normalized 96k CBR MP3 from worker or bridge for:', clean);
+    if (mp3Buffer.length < 500 || !is96kCbrMp3Buffer(mp3Buffer)) {
+      console.warn('⚠️ [TTS] Termux bridge audio was corrupted, too small, or not valid 96kbps CBR MP3 — skipping TTS.');
       return null;
     }
 
@@ -294,12 +278,12 @@ async function generateAndNormalizeTts(text, lang = 'en') {
     fs.writeFileSync(ttsFile, mp3Buffer);
     pruneSongCache();
 
-    console.log(`🎙️ [TTS] Successfully cached 96kbps CBR announcement (via Worker FFmpeg) -> tts_${hash}.mp3`);
+    console.log(`🎙️ [TTS] Successfully cached 96kbps CBR announcement (solely via Termux Bridge) -> tts_${hash}.mp3`);
     return `${CONTROLLER_URL}/api/audio-file/tts_${hash}.mp3`;
   } catch (err) {
-    console.warn('⚠️ [TTS] generateAndNormalizeTts error:', err.message);
+    console.warn('⚠️ [TTS] generateAndNormalizeTts error (skipping TTS announcement):', err.message);
+    return null;
   }
-  return null;
 }
 
 // Register Residential Bridge from Android Termux
