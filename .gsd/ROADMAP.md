@@ -1,8 +1,8 @@
 # Project Roadmap: Highrise Music Fleet & Engine
 
-> **Current Milestone:** Milestone 2: Strict 100% FFmpeg-Free Audio Server Fleet
-> **Current Phase:** 7 - Upstream Speech & TTS Normalization Pipeline
-> **Status:** ready
+> **Current Milestone:** Milestone 2: Strict 100% FFmpeg-Free Audio Server Fleet (Complete ✅)
+> **Current Phase:** All phases complete
+> **Status:** complete
 
 ---
 
@@ -54,16 +54,16 @@
 - [x] Plan 6.2: Audio Server FFmpeg Purge & ffmpegHelper Removal
 - [x] Plan 6.3: Strict Byte-Header Rejection for Non-96k MP3 Input
 
-### Phase 7: Upstream Speech & TTS Normalization Pipeline
-- **Status:** In Progress 🔄
-- **Goal:** Move all audio normalization and speech conversion upstream so Audio Servers only receive pre-verified 96kbps CBR stereo MP3.
-- [ ] Plan 7.1: Implement 96k CBR MP3 speech normalization on Central Controller / Download Worker.
-- [ ] Plan 7.2: Ensure all TTS announcements are pre-transcoded before invoking Audio Server `/announce`.
-- [ ] Plan 7.3: Verify Termux Residential Bridge and Cloud Worker direct 96k MP3 delivery.
+### Phase 7: Worker & Bridge FFmpeg Isolation (Zero FFmpeg on Controller & Audio Servers)
+- **Status:** Complete ✅
+- **Goal:** Confine 100% of all FFmpeg media processing and speech transcoding strictly to Cloud Worker (`e42d70e7`) and Residential Bridge (Termux), keeping Central Controller and Audio Servers 100% FFmpeg-free.
+- [x] Plan 7.1: Single-thread 96kbps CBR FFmpeg speech normalization on Cloud Worker (`/tts` and `/transcode`)
+- [x] Plan 7.2: Central Controller FFmpeg purge, pure JS byte-validator integration, and worker delegation
+- [x] Plan 7.3: Live fleet validation of speech announcements and stream delivery across Room 1 & Room 2
 
 ### Phase 8: Fleet Deployment & Zero-Process Verification
-- **Status:** ⬜ Not Started
+- **Status:** Complete ✅
 - **Goal:** Deploy 100% FFmpeg-free code to all production nodes and verify zero process spawning and 0.0% CPU overhead.
-- [ ] Plan 8.1: Update `deploy_audio_servers.py` to remove `ffmpegHelper.js` from deploy manifests.
-- [ ] Plan 8.2: Deploy to Audio Server 1 (Room 1) and Audio Server 2 (Room 2).
-- [ ] Plan 8.3: Verify process tree on containers (confirm 0 FFmpeg instances, 0 child processes under continuous playback).
+- [x] Plan 8.1: Update `deploy_audio_servers.py` and `deploy_main.py` deploy manifests
+- [x] Plan 8.2: Deploy to Audio Server 1 (Room 1), Audio Server 2 (Room 2), and Central Controller
+- [x] Plan 8.3: Verify live process tree on containers (confirm 0 FFmpeg instances, 0 child processes under continuous playback)

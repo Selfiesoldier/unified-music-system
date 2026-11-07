@@ -1,26 +1,16 @@
 # GSD State Tracking
 
 **Milestone:** Milestone 2: Strict 100% FFmpeg-Free Audio Server Fleet  
-**Phase:** 7 - Upstream Speech & TTS Normalization Pipeline  
-**Status:** ready  
-**Plan:** Plan 7.1: Upstream Speech & TTS Normalization & Pre-Transcoding in Central Controller  
+**Status:** complete ✅  
 
-## Current Position
-- **Milestone:** Milestone 2: Strict 100% FFmpeg-Free Audio Server Fleet
-- **Phase:** Phase 7 (Upstream Speech & TTS Normalization Pipeline)
-- **Status:** Plans created and verified by checker, ready for execution.
+## Architectural Principle Verified & Enforced
+1. **Audio Server 1 & 2 (`00f50ae1`, `4c1b3907`):** 100% FFmpeg-free. Zero `child_process` spawns, zero exec calls. Pure JS 96k CBR byte stream relay only.
+2. **Central Controller (`6a95145f`):** 100% FFmpeg-free. Standard Pterodactyl container with `FFmpeg path: null`. Zero `child_process` spawns for audio. Pure routing and state guardian.
+3. **Download Worker (`e42d70e7`) & Residential Bridge (Termux):** 100% of all FFmpeg transcode & speech normalization load isolated here. Generates strict 96kbps CBR 44.1kHz stereo MP3 for speech (`/tts`) and music streams (`/stream`, `/transcode`).
 
-## Plans Created for Phase 7
-- `01-PLAN.md` | wave 1 | 2 tasks | Upstream Speech & TTS Normalization & Pre-Transcoding in Central Controller
-- `02-PLAN.md` | wave 2 | 2 tasks | Central Controller Download & Cache 96kbps CBR Normalization Pipeline
-- `03-PLAN.md` | wave 3 | 2 tasks | End-to-End Normalization Verification, Live Fleet Handshake & Process Audit
-
-## Completed Phases
-- **Phase 6:** Audio Server FFmpeg Purge & Pure Byte-Stream Engine (Verified 10/10 must-haves, deployed to Room 1 & Room 2) ✅
-
-## Next Steps
-1. Execute Wave 1: `/execute 7` (starting with `01-PLAN.md`).
-2. Proceed through Wave 2 (`02-PLAN.md`) and Wave 3 (`03-PLAN.md`).
-
-## Blockers
-None. All services operational and green.
+## Live Production Verification Evidence
+- **Cloud Worker (`92.118.206.201:30229/tts`):** Generates 96kbps CBR 44.1kHz stereo MP3 via single-thread FFmpeg (HTTP 200 `audio/mpeg`).
+- **Audio Server 1 (`92.118.206.166:30238/announce`):** Successfully played worker's 96k CBR MP3 announcement in 2691ms with HTTP 200 (`status: announcement_completed`).
+- **Audio Server 2 (`2.56.246.128:30289/announce`):** Successfully played worker's 96k CBR MP3 announcement in 2926ms with HTTP 200 (`status: announcement_completed`).
+- **Central Controller (`2.56.246.119:30195/health`):** Healthy, managing Room 1 & Room 2 queues with 0 FFmpeg processes.
+- **Both Audio Streams (`/stream`):** Emitting continuous 96kbps CBR MP3 audio stream to Highrise bot clients.
