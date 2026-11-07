@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Room Audio Dashboard | Highrise Music</title>
+  <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+  
+  <!-- FLOATING CHAT WIDGET -->
+  <div id="live-chat-widget" style="position: fixed; bottom: 20px; right: 20px; width: 300px; height: 350px; background: rgba(0,0,0,0.85); border: 1px solid var(--border); border-radius: 12px; display: flex; flex-direction: column; backdrop-filter: blur(10px); z-index: 9999; overflow: hidden; box-shadow: 0 10px 30px rgba(0,0,0,0.5);">
+    <div style="background: rgba(255,255,255,0.1); padding: 10px 15px; font-weight: bold; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center;">
+      <span>💬 Live Chat</span>
+    </div>
+    <div id="live-chat-messages" style="flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 8px; font-size: 13px;">
+      <div style="color: #aaa; text-align: center; font-size: 11px;">Chat connected...</div>
+    </div>
+  </div>
+
+  <div id="toast-container"></div>
+
+  <!-- Login Overlay -->
+  <div id="login-overlay" class="active">
+    <div class="glass-card login-box">
+      <h2>Owner Access</h2>
+      <p>Please enter the master password</p>
+      <form id="login-form">
+        <input type="password" id="password" placeholder="Password" required>
+        <button type="submit">Unlock Dashboard</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Main App Container -->
+  <div id="dashboard" class="hidden">
+    
+    <!-- Sidebar -->
+    <nav class="sidebar">
+      <div class="brand">
+        <h2 id="brand-room-title">Room <span>Dashboard</span></h2>
+        <div id="health-badge" class="badge">Connecting...</div>
+      </div>
+      
+      <ul class="nav-links">
+        <li class="active" data-view="music">🎵 Music Studio</li>
+        <li data-view="playlists">📋 Playlists</li>
+        <li data-view="terminal">💻 Web Terminal</li>
+        <li data-view="economy">💰 Economy</li>
+        <li data-view="wardrobe">👕 Wardrobe</li>
+        <li data-view="shop">🛍️ Shop</li>
+        <li data-view="database">🗄️ Database</li>
+        <li data-view="moderation">🛡️ Moderation</li>
+        <li data-view="access">👑 Access Control</li>
+        <li data-view="analytics">📈 Analytics</li>
+        <li data-view="config">⚙️ System Config</li>
+      </ul>
+      
+      <div class="stat-sidebar">
+        <div class="stat-mini">Listeners: <span id="stat-listeners">0</span></div>
+        <div class="stat-mini">Queue: <span id="queue-count">0</span></div>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="content">
+      
+      <!-- VIEW: MUSIC STUDIO -->
+      <section id="view-music" class="view active">
+        <header>
+          <h1>Music <span>Studio</span></h1>
+        </header>
+        <div class="grid">
+          <!-- Now Playing -->
+          <div class="glass-card now-playing-card">
+            <div class="art-container">
+              <img id="np-thumbnail" src="" alt="Album Art">
+            </div>
+            <div class="info">
+              <h2 id="np-title">No music playing</h2>
+              <p id="np-artist">-</p>
+            </div>
+            
+            <div class="progress-bar-container">
+              <div class="time" id="time-current">0:00</div>
+              <div class="progress-track">
+                <div class="progress-fill" id="progress-fill"></div>
+              </div>
+              <div class="time" id="time-total">0:00</div>
+            </div>
+
+            <div class="controls">
+              <button id="btn-stop" class="danger">Stop</button>
+              <button id="btn-skip" class="primary">Skip ⏭</button>
+            </div>
+            
+            <div class="setting-group" style="margin-top:20px;">
+              <label>Master Volume: <span id="vol-label">100%</span></label>
+              <input type="range" id="volume-slider" min="0" max="200" value="100">
+            </div>
+            <div class="setting-group">
+              <label class="toggle-row">
+                TTS Announcements
+                <input type="checkbox" id="tts-toggle">
+                <span class="slider"></span>
+              </label>
+            </div>
+          </div>
+
+          <!-- Queue Manager -->
+          <div class="card queue-manager">
+            <div class="add-song">
+              <input type="text" id="song-url" placeholder="YouTube URL or Search Query...">
+              <div class="add-actions">
+                <button type="button" id="btn-queue" class="secondary">Queue Last</button>
+                <button type="button" id="btn-insert" class="primary">Play Next</button>
+                <button type="button" id="btn-upload-direct" class="upload-trigger-btn">📁 Upload MP3</button>
+              </div>
+            </div>
+
+            <!-- Direct MP3 File Upload Box -->
+            <div class="upload-mp3-card" id="upload-mp3-card">
+              <input type="file" id="mp3-file-input" accept="audio/mp3,audio/mpeg,.mp3" style="display: none;">
+              
+              <div class="upload-idle-state" id="upload-idle-state">
+                <div class="upload-left">
+                  <span class="upload-icon">📁</span>
+                  <div>
+                    <div class="upload-main-text">Upload Custom MP3 File</div>
+                    <div class="upload-sub-text">Plays directly with 0s gap when the current song ends</div>
+                  </div>
+                </div>
+                <button type="button" id="btn-choose-file" class="btn-choose-mp3">Choose MP3 File</button>
+              </div>
+
+              <div class="upload-ready-state" id="upload-ready-state" style="display: none;">
+                <div class="upload-file-details">
+                  <span class="file-badge">MP3 READY</span>
+                  <span id="selected-file-name" class="file-name-text">filename.mp3</span>
+                  <span id="selected-file-size" class="file-size-text">(0.0 MB)</span>
+                </div>
+                <div class="upload-action-buttons">
+                  <button type="button" id="btn-upload-next" class="btn-action-primary">▶️ Play Next (When Song Ends)</button>
+                  <button type="button" id="btn-upload-last" class="btn-action-secondary">📋 Queue at End</button>
+                  <button type="button" id="btn-upload-cancel" class="btn-action-cancel" title="Cancel">✕</button>
+                </div>
+              </div>
+
+              <div id="upload-progress-bar" class="upload-progress-container hidden">
+                <div class="upload-progress-fill" id="upload-progress-fill"></div>
+                <span id="upload-progress-text">Uploading MP3... 0%</span>
+              </div>
+            </div>
+            
+            <div class="queue-list" id="queue-list">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: PLAYLISTS -->
+      <section id="view-playlists" class="view">
+        <header>
+          <h1>Saved <span>Playlists</span></h1>
+        </header>
+        <div class="grid" id="playlists-grid">
+          <!-- Populated by JS -->
+        </div>
+      </section>
+
+      <!-- VIEW: MODERATION -->
+      <section id="view-moderation" class="view">
+        <header>
+          <h1>Live <span>Moderation</span></h1>
+        </header>
+        <div class="grid">
+          <div class="glass-card">
+            <h3>Global Announcement</h3>
+            <p class="subtext">Send a message to the room as the bot.</p>
+            <textarea id="announce-msg" placeholder="Hello everyone!"></textarea>
+            <button id="btn-announce" class="primary">Send Broadcast</button>
+          </div>
+          
+          <div class="glass-card">
+            <h3>Room Roster</h3>
+            <p class="subtext">Current users in the room (fetched from IPC)</p>
+            <button id="btn-refresh-roster" class="secondary" style="margin-bottom: 10px;">Refresh Roster</button>
+            <div class="roster-list" id="roster-list">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+          
+          <div class="glass-card">
+            <h3>Quick Actions</h3>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+              <button id="btn-come" class="primary" style="flex: 1;">Come to me</button>
+              <button id="btn-follow" class="secondary" style="flex: 1;">Follow me</button>
+              <button id="btn-stop-follow" class="danger" style="flex: 1;">Stop</button>
+            </div>
+            
+            <h3>Emotes</h3>
+            <div style="display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 20px;">
+              <button class="secondary" onclick="sendEmote('emote-wave')">Wave</button>
+              <button class="secondary" onclick="sendEmote('emote-dance-tiktok2')">Dance 1</button>
+              <button class="secondary" onclick="sendEmote('dance-macarena')">Macarena</button>
+              <button class="secondary" onclick="sendEmote('emote-kiss')">Kiss</button>
+              <button class="secondary" onclick="sendEmote('emote-laughing')">Laugh</button>
+              <button class="secondary" onclick="sendEmote('emote-hello')">Hello</button>
+            </div>
+            
+            <h3>Locations & Stage</h3>
+            <p class="subtext">Click to instantly teleport the bot.</p>
+            <div id="locations-list" style="display: flex; flex-wrap: wrap; gap: 10px; margin-top: 15px;">
+              <!-- Populated by JS -->
+              Loading...
+            </div>
+          </div>
+          
+          <div class="glass-card">
+            <h3>Target Actions</h3>
+            <div class="form-group">
+              <label>Target Username</label>
+              <input type="text" id="mod-target" placeholder="Username (e.g. Sanif)">
+            </div>
+            <button id="btn-kick" class="danger">Kick User</button>
+            <hr>
+            <h4>Teleport Target</h4>
+            <div class="coord-inputs">
+              <input type="number" id="mod-x" placeholder="X">
+              <input type="number" id="mod-y" placeholder="Y">
+              <input type="number" id="mod-z" placeholder="Z">
+            </div>
+            <button id="btn-teleport" class="secondary" style="margin-top: 10px;">Teleport User</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: TERMINAL -->
+      <section id="view-terminal" class="view">
+        <header>
+          <h1>Web <span>Terminal</span></h1>
+        </header>
+        <div class="glass-card terminal-card" style="display: flex; flex-direction: column; height: 60vh;">
+          <div class="terminal-output" id="terminal-output" style="flex: 1; background: #000; color: #0f0; font-family: monospace; padding: 15px; border-radius: 8px; overflow-y: auto; margin-bottom: 15px;">
+            <div>Welcome to the Master Terminal. Commands execute as the Owner.</div>
+            <div style="color: #888;">Type !help for commands. Note: Bot text responses appear in-game, not here.</div>
+          </div>
+          <div style="display: flex; gap: 10px;">
+            <input type="text" id="terminal-input" placeholder="Type a command (e.g., !play song, !givepoints 100 all)..." style="flex: 1; font-family: monospace;">
+            <button id="btn-terminal-send" class="primary">Execute</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: ECONOMY -->
+      <section id="view-economy" class="view">
+        <header>
+          <h1>Economy <span>Manager</span></h1>
+        </header>
+        <div class="grid">
+          <div class="glass-card" style="grid-column: 1 / -1;">
+            <h3>User Balances</h3>
+            <div style="display: flex; gap: 10px; margin-bottom: 15px;">
+              <input type="text" id="economy-target" placeholder="Username">
+              <input type="number" id="economy-amount" placeholder="Amount">
+              <button id="btn-eco-add" class="primary">Add Points</button>
+              <button id="btn-eco-set" class="secondary">Set Exactly</button>
+              <button id="btn-eco-reset" class="danger">Reset to 0</button>
+            </div>
+            <hr style="border-color: rgba(255,255,255,0.1); margin: 15px 0;">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 15px;">
+              <h4 style="margin: 0;">Global Free Music</h4>
+              <label class="toggle-row" style="margin: 0;">
+                <input type="checkbox" id="free-music-toggle">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="roster-list" id="economy-list" style="max-height: 400px;">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: WARDROBE -->
+      <section id="view-wardrobe" class="view">
+        <header>
+          <h1>Bot <span>Wardrobe</span></h1>
+        </header>
+        <div class="grid">
+          <div class="glass-card">
+            <h3>Outfit Presets</h3>
+            <p class="subtext">Select an outfit preset to instantly wear it in-game.</p>
+            <div style="display: flex; gap: 10px; margin-top: 15px;">
+              <select id="outfit-select" class="form-group" style="padding: 10px; background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; flex: 1;">
+                <option value="">Loading presets...</option>
+              </select>
+              <button id="btn-wear-outfit" class="primary">Wear Outfit</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: SHOP -->
+      <section id="view-shop" class="view">
+        <header>
+          <h1>Item <span>Shop</span></h1>
+        </header>
+        <div class="grid">
+          <div class="glass-card">
+            <h3>Search Catalog</h3>
+            <p class="subtext">Search for any Highrise item and instantly buy it for the bot.</p>
+            <div style="display: flex; gap: 10px; margin-top: 15px; margin-bottom: 20px;">
+              <input type="text" id="shop-search-input" placeholder="e.g. 'black shirt'" style="flex: 1; padding: 10px; border-radius: 6px; background: rgba(255,255,255,0.1); color: #fff; border: 1px solid rgba(255,255,255,0.2);">
+              <button id="btn-search-shop" class="primary">Search</button>
+            </div>
+            <div id="shop-results-grid" style="display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 15px;">
+              <!-- Populated by JS -->
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: DATABASE -->
+      <section id="view-database" class="view">
+        <header>
+          <h1>User <span>Database</span></h1>
+        </header>
+        <div class="grid">
+          <div class="glass-card" style="grid-column: 1 / -1;">
+            <h3>Permanent User History</h3>
+            <p class="subtext">A complete log of every user who has ever joined the room.</p>
+            <div style="margin-top: 15px; overflow-x: auto;">
+              <table style="width: 100%; text-align: left; border-collapse: collapse;">
+                <thead>
+                  <tr style="border-bottom: 1px solid var(--border);">
+                    <th style="padding: 10px;">Username</th>
+                    <th style="padding: 10px;">First Seen</th>
+                    <th style="padding: 10px;">Last Seen</th>
+                    <th style="padding: 10px;">Visits</th>
+                    <th style="padding: 10px;">Messages Sent</th>
+                  </tr>
+                </thead>
+                <tbody id="history-table-body">
+                  <tr><td colspan="5" style="padding: 10px; color: #888;">Loading history...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: ACCESS CONTROL -->
+      <section id="view-access" class="view">
+        <header>
+          <h1>Access <span>Control</span></h1>
+        </header>
+        
+        <div class="grid">
+          <div class="glass-card">
+            <h3>Administrators</h3>
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+              <input type="text" id="add-admin-input" placeholder="Username">
+              <button id="btn-add-admin" class="primary">Add Admin</button>
+            </div>
+            <ul id="list-admins" class="priv-list"></ul>
+          </div>
+          <div class="glass-card">
+            <h3>VIP Members</h3>
+            <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+              <input type="text" id="add-vip-input" placeholder="Username">
+              <button id="btn-add-vip" class="primary">Add VIP</button>
+            </div>
+            <ul id="list-vips" class="priv-list"></ul>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: ANALYTICS -->
+      <section id="view-analytics" class="view">
+        <header>
+          <h1>System <span>Analytics</span></h1>
+        </header>
+        
+        <div class="grid">
+          <div class="glass-card">
+            <h3>System Vitals</h3>
+            <ul class="priv-list" style="margin-top: 15px;">
+              <li style="display: flex; justify-content: space-between;"><span>Uptime</span> <strong id="stat-uptime">-</strong></li>
+              <li style="display: flex; justify-content: space-between;"><span>CPU Usage</span> <strong id="stat-cpu">-</strong></li>
+              <li style="display: flex; justify-content: space-between;"><span>Memory Usage</span> <strong id="stat-mem">-</strong></li>
+              <li style="display: flex; justify-content: space-between;"><span>Queue Length</span> <strong id="stat-queue-len">-</strong></li>
+              <li style="display: flex; justify-content: space-between;"><span>Active Playlists</span> <strong id="stat-playlists-len">-</strong></li>
+            </ul>
+          </div>
+          <div class="glass-card">
+            <h3>Background Tasks</h3>
+            <ul class="priv-list" id="list-btm" style="margin-top: 15px;">
+              <li>Loading BTM Status...</li>
+            </ul>
+            <button id="btn-refresh-stats" class="secondary" style="margin-top: 15px; width: 100%;">Refresh Analytics</button>
+          </div>
+        </div>
+      </section>
+
+      <!-- VIEW: SYSTEM CONFIG -->
+      <section id="view-config" class="view">
+        <header>
+          <h1>System <span>Configuration</span></h1>
+        </header>
+        <div class="grid">
+          <div class="glass-card">
+            <h3>Music Mode</h3>
+            <p class="subtext">Change the auto-play algorithm</p>
+            <div style="display: flex; gap: 10px;">
+              <select id="mode-select" class="form-group" style="padding: 10px; background: rgba(255,255,255,0.1); color: white; border: 1px solid rgba(255,255,255,0.2); border-radius: 8px; flex: 1;">
+                <option value="recent">Recent (History-based)</option>
+                <option value="top">Top (Most Played)</option>
+                <option value="favorites">Favorites (VIP dedicated)</option>
+                <option value="random">Random</option>
+              </select>
+              <button id="btn-save-mode" class="secondary">Apply Mode</button>
+            </div>
+          </div>
+          
+          <div class="glass-card">
+            <h3>Bot Identity</h3>
+            <p class="subtext">Values are masked for security. Overwrite to change.</p>
+            
+            <div class="form-group">
+              <label>Highrise Bot Token</label>
+              <input type="password" id="cfg-token" placeholder="Leave blank to keep current">
+              <small id="cfg-token-status" class="status-indicator"></small>
+            </div>
+            
+            <div class="form-group">
+              <label>Highrise Room ID</label>
+              <input type="password" id="cfg-room" placeholder="Leave blank to keep current">
+              <small id="cfg-room-status" class="status-indicator"></small>
+            </div>
+            
+            <button id="btn-save-config" class="primary">Save Configuration</button>
+            <p class="warning-text" style="margin-top: 10px;">Note: Changes will not apply until the stack is restarted.</p>
+          </div>
+          
+          <div class="glass-card danger-zone">
+            <h3>Danger Zone</h3>
+            <p>Restarting the stack will temporarily disconnect the bot and stop all music.</p>
+            <button id="btn-restart" class="danger">Restart Stack</button>
+          </div>
+        </div>
+      </section>
+      
+    </main>
+  </div>
+
+  <script src="js/app.js"></script>
+</body>
+</html>

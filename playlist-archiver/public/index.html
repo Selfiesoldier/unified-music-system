@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Telegram Music Vault Archiver</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+</head>
+<body>
+  <div class="glow-bg"></div>
+  
+  <div class="app-container">
+    <!-- Top Navbar -->
+    <header class="navbar">
+      <div class="brand">
+        <div class="brand-icon">⚡</div>
+        <div class="brand-text">
+          <h1>YouTube Music Vault</h1>
+          <span class="subtitle">100% YouTube Engine • Laptop Ingestion Pipeline</span>
+        </div>
+      </div>
+      <div class="nav-badges">
+        <div class="pill online" id="tgPill">
+          <span class="dot"></span> Telegram Bot: <strong id="botName">@Kmrmusic_bot</strong>
+        </div>
+        <div class="pill vault" id="vaultPill">
+          <span class="icon">📦</span> Vault: <strong id="vaultCount">0</strong> tracks
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Hero Card / Input -->
+    <section class="card input-card">
+      <div class="card-header">
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="urlTab">🔴 YouTube Playlist URL</button>
+          <button class="tab-btn" data-tab="textTab">📝 Paste Song List</button>
+        </div>
+        <div class="vault-sync-action">
+          <button class="btn btn-ghost" id="syncVaultBtn" title="Sync Vault from Cloud Main Server">🔄 Sync Vault</button>
+        </div>
+      </div>
+
+      <!-- URL Tab -->
+      <div class="tab-content active" id="urlTab">
+        <div class="input-group">
+          <input type="text" id="playlistUrl" placeholder="Paste YouTube playlist or video link (e.g. https://www.youtube.com/playlist?list=...)" autocomplete="off">
+          <button class="btn btn-primary" id="fetchBtn">
+            <span class="btn-text">Analyze & Load</span>
+            <span class="spinner hidden"></span>
+          </button>
+        </div>
+        <div class="url-hints">
+          <span>🔴 100% YouTube Engine</span>
+          <span>⚡ Direct yt-dlp Extraction</span>
+          <span>🎧 96kbps MP3 Single-Thread</span>
+        </div>
+      </div>
+
+      <!-- Text Tab -->
+      <div class="tab-content" id="textTab">
+        <textarea id="textList" rows="4" placeholder="Paste song titles (one per line, e.g.):&#10;The Weeknd - Blinding Lights&#10;Lana Del Rey - Cinnamon Girl&#10;Dua Lipa - Levitating"></textarea>
+        <div class="text-tab-actions">
+          <button class="btn btn-primary" id="fetchTextBtn">Search & Load from YouTube</button>
+        </div>
+      </div>
+
+      <!-- Config & Duplicate Prevention & Concurrency -->
+      <div class="options-bar">
+        <label class="toggle-control">
+          <input type="checkbox" id="skipDuplicatesToggle" checked>
+          <span class="slider"></span>
+          <span class="toggle-label">
+            <strong>Skip Duplicates</strong> (Avoid re-downloading songs in Vault)
+          </span>
+        </label>
+        
+        <div class="concurrency-wrapper">
+          <label for="concurrencySelect" class="concurrency-label">⚡ Parallel Speed:</label>
+          <select id="concurrencySelect" class="concurrency-select">
+            <option value="10">10 Parallel Workers</option>
+            <option value="15" selected>15 Parallel (Recommended)</option>
+            <option value="20">20 Parallel (Ultra-Fast)</option>
+            <option value="25">25 Parallel (Maximum)</option>
+          </select>
+        </div>
+
+        <div class="format-badge">🔴 100% YouTube • 96k MP3</div>
+      </div>
+    </section>
+
+    <!-- Stats Overview -->
+    <section class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Tracks</div>
+        <div class="stat-value" id="statTotal">0</div>
+        <div class="stat-sub" id="statPlaylistTitle">No playlist loaded</div>
+      </div>
+      <div class="stat-card ready">
+        <div class="stat-label">Ready to Ingest</div>
+        <div class="stat-value" id="statReady">0</div>
+        <div class="stat-sub">Pending download</div>
+      </div>
+      <div class="stat-card skipped">
+        <div class="stat-label">Already in Vault</div>
+        <div class="stat-value" id="statSkipped">0</div>
+        <div class="stat-sub">Zero bandwidth used</div>
+      </div>
+      <div class="stat-card success">
+        <div class="stat-label">Archived</div>
+        <div class="stat-value" id="statUploaded">0</div>
+        <div class="stat-sub">In Telegram Channel</div>
+      </div>
+      <div class="stat-card failed">
+        <div class="stat-label">Failed</div>
+        <div class="stat-value" id="statFailed">0</div>
+        <div class="stat-sub">Errors encountered</div>
+      </div>
+    </section>
+
+    <!-- Progress Card -->
+    <section class="card progress-card" id="progressSection">
+      <div class="progress-header">
+        <div class="progress-title-block">
+          <div class="progress-main-title">Archiving Progress</div>
+          <div class="progress-current-song" id="currentSongLabel">Waiting to start...</div>
+        </div>
+        <div class="controls-group">
+          <button class="btn btn-success" id="startBtn" disabled>🚀 Start Archiving</button>
+          <button class="btn btn-warning" id="pauseBtn" disabled>⏸️ Pause</button>
+          <button class="btn btn-danger" id="stopBtn" disabled>⏹️ Stop</button>
+        </div>
+      </div>
+
+      <div class="progress-bar-container">
+        <div class="progress-bar" id="progressBar" style="width: 0%;"></div>
+      </div>
+      <div class="progress-details">
+        <span id="progressPercent">0%</span>
+        <span id="progressCount">0 / 0 tracks</span>
+      </div>
+    </section>
+
+    <!-- Tracks Table -->
+    <section class="card table-card">
+      <div class="table-toolbar">
+        <div class="toolbar-title">
+          <h2>Playlist Tracks</h2>
+          <span class="table-count" id="tableCountBadge">0 tracks</span>
+        </div>
+        <div class="toolbar-filters">
+          <input type="text" id="searchFilter" placeholder="Filter by title or artist...">
+          <select id="statusFilter">
+            <option value="all">All Statuses</option>
+            <option value="pending">Pending</option>
+            <option value="in_vault">Already in Vault</option>
+            <option value="completed">Archived</option>
+            <option value="failed">Failed</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-wrapper">
+        <table class="tracks-table">
+          <thead>
+            <tr>
+              <th width="50">#</th>
+              <th>Track & Artist</th>
+              <th width="120">Source</th>
+              <th width="90">Duration</th>
+              <th width="180">Status</th>
+              <th width="140">Telegram Vault</th>
+            </tr>
+          </thead>
+          <tbody id="tracksTbody">
+            <tr class="empty-row">
+              <td colspan="6">
+                <div class="empty-state">
+                  <div class="empty-icon">🎵</div>
+                  <div class="empty-text">No tracks loaded yet. Paste a playlist URL above and click <strong>Analyze & Load</strong>!</div>
+                </div>
+              </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- Live Terminal Logs Drawer -->
+    <section class="card terminal-card">
+      <div class="terminal-header">
+        <div class="terminal-title">
+          <span class="term-dot red"></span>
+          <span class="term-dot yellow"></span>
+          <span class="term-dot green"></span>
+          <span>Live Ingestion Console</span>
+        </div>
+        <div class="terminal-actions">
+          <button class="btn btn-micro" id="clearLogBtn">Clear Console</button>
+        </div>
+      </div>
+      <div class="terminal-body" id="terminalBody">
+        <div class="log-line info"><span class="timestamp">[INIT]</span> Pipeline ready. Connect to Telegram and paste playlist link.</div>
+      </div>
+    </section>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
+

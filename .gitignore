@@ -14,3 +14,7 @@ telegram_vault_backup.json
 *.tmp
 *.bak
 *.exe
+.gemini/
+.agent/
+.recyclebin/
+

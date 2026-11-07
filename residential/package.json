@@ -1,0 +1,14 @@
+{
+  "name": "highrise-residential-bridge",
+  "version": "2.0.0",
+  "description": "Residential Audio Downloader Bridge for Highrise Musicbot",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "tunnel": "node manager.js"
+  },
+  "keywords": ["highrise", "musicbot", "residential-bridge", "audio"],
+  "author": "Highrise Music Team",
+  "license": "ISC"
+}
