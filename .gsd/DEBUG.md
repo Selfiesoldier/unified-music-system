@@ -99,3 +99,55 @@ Real-world users experiencing multiple audio stream degradation issues:
    - Updated `transcodeAudio` to prioritize Termux (`${activeResidentialBridgeUrl}/transcode`) whenever `isBridgeAlive` is true, with seamless fallback to `${DOWNLOAD_WORKER_URL}/transcode` if Termux fails or is offline.
    - Preserved Telegram channel `deleteMessage` on the old faulty message.
 3. Deployed and verified healthy on Central Controller (`6a95145f`).
+
+---
+
+## Debug Session: Mid-Stream Sample Rate Mismatch (48kHz vs 44.1kHz) & TTS Disconnects
+
+### Symptom
+User reported: *"when i was listening it was going preety good but sometime the tts is bursting again and i got disconnected"*.
+
+### Evidence Gathered
+1. **Byte Header Inspection of Cache:**
+   - Inspected audio frame sync words across all cached songs on Central Controller (`http://2.56.246.119:30195/api/audio-file/`):
+     - `song_yt_0JLRExeOH-k.mp3`: offset=45, header `fffb7400` -> **48,000 Hz (48kHz)**.
+     - `song_yt_4ujQOR2DMFM.mp3`: offset=45, header `fffb7400` -> **48,000 Hz (48kHz)**.
+     - `song_yt_T5xcnjAG8pE.mp3`: offset=45, header `fffb7400` -> **48,000 Hz (48kHz)**.
+     - `tts_2f967d976f65da7b.mp3`: offset=0, header `fffb7064` -> **44,100 Hz (44.1kHz)**.
+     - `silence_96k.mp3`: offset=0, header `fffb7064` -> **44,100 Hz (44.1kHz)**.
+   - Exactly 6 out of 11 cached songs were 48kHz (originating from yt-dlp YouTube archiving without sample rate clamping).
+   - 5 songs were already 44.1kHz. This perfectly explained why the issue only happened *"sometime"*.
+2. **Mechanism of Audio Burst & Disconnect:**
+   - When a 48kHz track plays, the listener's audio decoder (browser, VLC, Highrise client) configures its DAC/audio clock to 48,000 Hz.
+   - When an announcement or silence (44.1kHz) arrives:
+     - The decoder receives 44.1kHz frames (1152 samples) and renders them at 48kHz, causing a ~9% speedup / pitch-shifted chipmunk burst.
+     - Strict decoders reject mid-stream sample rate changes and abort the HTTP connection (`👋 Client left /stream`).
+     - The client automatically reconnects (`👤 Client joined /stream`), immediately receiving the instant burst buffer, giving another stuttering burst sensation.
+3. **Pacing Lead & Backpressure Bloat:**
+   - `streamAnnouncementMp3` used `TARGET_LEAD_MS = 200` while `audioPlayer.js` and `silenceFeed` used 1,000ms, causing lead cushion jitter during speech.
+   - `persistentStreamManager.js` allowed stalled listener buffers to accumulate up to 512 KB (43 seconds of audio), flooding reconnecting listeners.
+
+### Resolution Applied
+1. **Fleet-Wide Strict 44.1kHz Enforcement:**
+   - Updated `audio-server/src/mp3Validator.js` and `main-server/src/mp3Validator.js` to strictly require `sampleRateIdx === 0` (44.1 kHz). Any 48kHz audio is rejected at the validator gate.
+   - Central Controller (`main-server/server.js`) automatically detects 48kHz files via `validateMp3FileHeader` and offloads them to Worker/Termux `/transcode` to produce strict 44.1kHz 96kbps CBR Stereo MP3 before caching and streaming.
+2. **Monotonic Hrtime Announcement Pacing:**
+   - Refactored `streamAnnouncementMp3` in `audio-server/src/persistentStreamManager.js` to use monotonic `process.hrtime.bigint()` with `LEAD_NS = 1_000_000_000n` (1.0s cushion), perfectly matching `audioPlayer` and `silenceFeed`.
+3. **Backpressure Hardening:**
+   - Reduced stalled client buffer threshold from 512 KB down to 64 KB (~5.4s).
+   - Only update `meta.lastSuccessfulWrite` when `client.write()` returns `true` or upon `'drain'`.
+4. **YouTube Archiver Resampling:**
+   - Added `-ar 44100 -ac 2` to `playlist-archiver/resolver.js` yt-dlp arguments.
+5. **Fleet Proactive Cache Repair & Deployment:**
+   - Ran `scripts/fix_cached_sample_rates.py` against Central Controller, repairing all 48kHz cached tracks to verified 44.1kHz.
+   - Deployed `audio-server` to Room 1 (`00f50ae1`) and Room 2 (`4c1b3907`).
+   - Deployed `main-server` to Central Controller (`6a95145f`).
+
+### Empirical Verification
+- All cached songs on Central Controller verified `srIdx=0` (44.1kHz).
+- New track downloads verified `srIdx=0` (44.1kHz), sync offset: 0.
+- Executed live announcement during active song playback (`scripts/test_live_announcement.js`):
+  - `LOG: ⏸️ [AudioPlayer] Paused music frame streaming for announcement.`
+  - Announcement streamed 88.8 KB in 7.1s smoothly.
+  - `LOG: ▶️ [AudioPlayer] Resumed music streaming after announcement (offset adjusted by 6640ms, zero burst).`
+  - Active listeners remained connected with **0 disconnects and 0 reconnects**.

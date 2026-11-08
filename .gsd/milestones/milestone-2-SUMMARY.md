@@ -28,3 +28,4 @@
 - **Strict Architecture Isolation:** FFmpeg is permanently barred from audio servers and central controller. Any and all media transcoding is exclusively offloaded to Cloud Worker or Termux.
 - **Termux-Only Speech Announcements:** TTS voice announcements are solely produced by the Termux residential bridge; if Termux is offline, TTS is skipped with zero delay.
 - **Cache Eviction Immunity:** Songs currently playing or queued across rooms are immune to LRU cache pruning.
+

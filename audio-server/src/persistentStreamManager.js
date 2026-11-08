@@ -150,10 +150,10 @@ export class PersistentStreamManager {
       const meta = this.clientMetadata.get(client);
       if (!meta) continue;
 
-      // If client buffer is severely bloated (> 512 KB = > 42s unread in kernel socket buffer)
-      if (client.writableLength > 512 * 1024) {
-        if (now - meta.lastSuccessfulWrite > 60000) {
-          console.warn(`⚠️ [StreamManager] Removing stalled listener (${(client.writableLength / 1024).toFixed(0)} KB un-drained > 60s)`);
+      // If client buffer is bloated (> 64 KB = ~5.4s unread in kernel socket buffer)
+      if (client.writableLength > 64 * 1024) {
+        if (now - meta.lastSuccessfulWrite > 10000) {
+          console.warn(`⚠️ [StreamManager] Removing stalled listener (${(client.writableLength / 1024).toFixed(0)} KB un-drained > 10s)`);
           this.removeClient(client);
         }
         continue;
@@ -162,7 +162,9 @@ export class PersistentStreamManager {
       try {
         const canWrite = client.write(chunk);
         meta.lastWrite = now;
-        meta.lastSuccessfulWrite = now;
+        if (canWrite) {
+          meta.lastSuccessfulWrite = now;
+        }
         meta.bytesWritten += chunk.length;
         meta.writeFailures = 0;
       } catch (_) {
@@ -313,8 +315,10 @@ export class PersistentStreamManager {
       this.audioPlayer.pauseForAnnouncement();
     }
 
-    const TARGET_LEAD_MS = 200;
-    const chunkSize = 1200; // 100ms at 96kbps
+    const CHUNK_SIZE = 1200; // 100ms at 96kbps
+    const CHUNK_NS = 100_000_000n; // 100ms in ns
+    const LEAD_NS = 1_000_000_000n; // Exact 1.0s lead cushion, perfectly matching audioPlayer & silenceFeed
+
     let offset = 0;
 
     // Skip ID3 tag and align directly to first MPEG sync word
@@ -339,26 +343,29 @@ export class PersistentStreamManager {
       }
     }
 
-    const startTime = Date.now();
+    const hrStart = process.hrtime.bigint();
+    let chunksSent = 0;
 
     try {
       while (offset < normalizedBuffer.length) {
         if (this.announcementSessionId !== expectedSession) {
           return false;
         }
-        const end = Math.min(offset + chunkSize, normalizedBuffer.length);
-        const chunk = normalizedBuffer.slice(offset, end);
-        this.broadcast(chunk);
-        offset = end;
 
-        const audioDurationSentMs = (offset / 12000) * 1000;
-        const realTimeElapsedMs = Date.now() - startTime;
-        const leadMs = audioDurationSentMs - realTimeElapsedMs;
+        const elapsedNs = process.hrtime.bigint() - hrStart;
+        const targetChunks = Number((elapsedNs + LEAD_NS) / CHUNK_NS);
 
-        if (leadMs > TARGET_LEAD_MS) {
-          const sleepMs = leadMs - TARGET_LEAD_MS;
-          await new Promise(r => setTimeout(r, sleepMs));
+        while (chunksSent < targetChunks && offset < normalizedBuffer.length) {
+          const end = Math.min(offset + CHUNK_SIZE, normalizedBuffer.length);
+          const chunk = Buffer.from(normalizedBuffer.subarray(offset, end));
+          this.broadcast(chunk);
+          offset = end;
+          chunksSent++;
         }
+
+        if (offset >= normalizedBuffer.length) break;
+
+        await new Promise(r => setTimeout(r, 40));
       }
 
       if (this.announcementSessionId === expectedSession) {

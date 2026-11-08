@@ -215,7 +215,7 @@ export async function downloadAndTranscode(track, tempDir, logCallback = () => {
       '--audio-format', 'mp3',
       '--audio-quality', '96k',
       '--ffmpeg-location', FFMPEG_PATH,
-      '--postprocessor-args', 'ExtractAudio:-nostdin -y',
+      '--postprocessor-args', 'ExtractAudio:-nostdin -y -ar 44100 -ac 2',
       '--no-playlist',
       '--force-overwrites',
       '--no-warnings',

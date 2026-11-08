@@ -82,10 +82,10 @@ export function is96kCbrMp3Buffer(buffer) {
     return false;
   }
 
-  // Sample Rate Index: 0 = 44.1 kHz, 1 = 48.0 kHz
-  // Both 44.1kHz and 48kHz at 96kbps stream at the exact same constant byte throughput: 12,000 bytes/sec
+  // Sample Rate Index: 0 = 44.1 kHz (strict fleet-wide audio standard)
+  // Enforcing strict 44.1kHz eliminates mid-stream DAC clock mismatches, pitch burst, and decoder disconnects
   const sampleRateIdx = (b2 >> 2) & 3;
-  if (sampleRateIdx !== 0 && sampleRateIdx !== 1) {
+  if (sampleRateIdx !== 0) {
     return false;
   }
 
@@ -96,10 +96,10 @@ export function is96kCbrMp3Buffer(buffer) {
     return false;
   }
 
-  // Frame length calculation: Math.floor(144 * bitrate / sampleRate) + padding
-  const sampleRate = sampleRateIdx === 0 ? 44100 : 48000;
+  // Frame length calculation for 44.1kHz 96kbps CBR: Math.floor(144 * bitrate / sampleRate) + padding
+  const sampleRate = 44100;
   const padding = (b2 >> 1) & 1;
-  const frameLength = Math.floor((144 * 96000) / sampleRate) + padding; // 313/314 bytes for 44.1k, 288 bytes for 48k
+  const frameLength = Math.floor((144 * 96000) / sampleRate) + padding; // 313/314 bytes for 44.1k
 
   // Confirm next frame sync if buffer contains enough bytes
   const nextSync = syncOffset + frameLength;
@@ -112,7 +112,7 @@ export function is96kCbrMp3Buffer(buffer) {
     if (((nb1 >> 3) & 3) !== 3) return false; // MPEG-1
     if (((nb1 >> 1) & 3) !== 1) return false; // Layer III
     if (((nb2 >> 4) & 15) !== 7) return false; // 96 kbps
-    if (((nb2 >> 2) & 3) !== sampleRateIdx) return false;  // Same sample rate
+    if (((nb2 >> 2) & 3) !== 0) return false;  // Must also be 44.1 kHz
   }
 
   return true;

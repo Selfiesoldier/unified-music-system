@@ -34,10 +34,10 @@ const frame96k44 = makeMp3Frame({ bitrateKbps: 96, sampleRate: 44100, channelMod
 assert.strictEqual(is96kCbrMp3Buffer(frame96k44), true, 'Valid 96k 44.1k should pass');
 console.log('[PASS] Valid 96k 44.1kHz Joint Stereo accepted');
 
-// 2. Valid 96k CBR 48kHz Stereo
+// 2. Reject 48kHz (Strict fleet standard requires 44.1kHz to prevent mid-stream decoder bursts)
 const frame96k48 = makeMp3Frame({ bitrateKbps: 96, sampleRate: 48000, channelMode: 0 });
-assert.strictEqual(is96kCbrMp3Buffer(frame96k48), true, 'Valid 96k 48k should pass');
-console.log('[PASS] Valid 96k 48kHz Stereo accepted');
+assert.strictEqual(is96kCbrMp3Buffer(frame96k48), false, '48kHz sample rate must be rejected');
+console.log('[PASS] 48kHz frame rejected (fleet standard requires strict 44.1kHz)');
 
 // 3. Invalid 128kbps (Must Reject)
 const frame128k = makeMp3Frame({ bitrateKbps: 128, sampleRate: 44100, channelMode: 1 });
