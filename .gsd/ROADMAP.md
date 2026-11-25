@@ -1,8 +1,8 @@
 # Project Roadmap: Highrise Music Fleet & Engine
 
-> **Current Milestone:** Milestone 4: Audio Server Hardening & Bug Fixes
-> **Current Phase:** Phase 10 — Planned
-> **Status:** planned
+> **Current Milestone:** Milestone 4: Audio Server Hardening & Bug Fixes (Phase 10 Complete ✅)
+> **Current Phase:** Phase 10 — Complete
+> **Status:** complete
 
 ---
 
@@ -85,7 +85,7 @@
 ## Milestone 4: Audio Server Hardening & Bug Fixes
 
 ### Phase 10: Audio Server Bug Fixes, Security & Memory Guards
-- **Status:** Planned 📋
+- **Status:** Complete ✅
 - **Goal:** Fix broken `/announce` (`streamAnnouncementMp3`), `/flush` ring-buffer pointer reset, missing proxy/fetch timeouts, `X-Forwarded-For` DDoS/whitelist spoofing, unbounded track/load-test memory, and unused imports in `audio-server/`.
-- [ ] Plan 10.1: Audio Server Bug Fixes & Memory/Timeout Guards (`audio-server/server.js`, `audio-server/src/audioPlayer.js`) [Wave 1]
-- [ ] Plan 10.2: Audio Server Security Hardening & Dead Code Cleanup (`audio-server/server.js`) [Wave 1]
+- [x] Plan 10.1: Audio Server Bug Fixes & Memory/Timeout Guards (`audio-server/server.js`, `audio-server/src/audioPlayer.js`) [Wave 1]
+- [x] Plan 10.2: Audio Server Security Hardening & Dead Code Cleanup (`audio-server/server.js`) [Wave 1]
