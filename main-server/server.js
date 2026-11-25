@@ -863,8 +863,11 @@ async function injectTTSToStream(ttsBuffer, onDecoded = null, cacheKey = null) {
       resolve(false);
     });
     
-    ttsDecoder.stdin.write(ttsBuffer);
-    ttsDecoder.stdin.end();
+    if (ttsDecoder.stdin) {
+      ttsDecoder.stdin.on('error', () => {});
+      ttsDecoder.stdin.write(ttsBuffer);
+      ttsDecoder.stdin.end();
+    }
   });
 }
 
@@ -2190,11 +2193,7 @@ async function downloadTrackToFile(url, outputPath, thisStreamId, title = '', me
             downloadSuccess = true;
             bridgePoolManager.markDownloadEnd(bridge, true);
 
-            setImmediate(async () => {
-              try {
-                await saveSongToPersistentCache(outputPath, cacheKey, metadata, 'youtube');
-              } catch (_) {}
-            });
+            await saveSongToPersistentCache(outputPath, cacheKey, metadata, 'youtube');
             return outputPath;
           }
           console.warn(`⚠️ [Downloader] "${bridge.name}" file too small (${stats.size} bytes), trying next bridge...`);
@@ -2215,38 +2214,40 @@ async function downloadTrackToFile(url, outputPath, thisStreamId, title = '', me
   }
 
   // 3. Clean high-fidelity SoundCloud Fallback
-  const cleanTitle = (title || url || '')
+  const isHttpUrl = /^https?:\/\//i.test(url || '');
+  const rawTitle = (title || (!isHttpUrl ? url : '') || '').trim();
+  if (!isDirectSoundCloud && (!rawTitle || rawTitle.toLowerCase() === 'unknown track' || metadata?.skipSoundCloudFallback)) {
+    console.warn(`⚠️ [Downloader] Skipping SoundCloud fallback — unresolved track title for "${url}"`);
+    await sendRoomNotification(`⚠️ Track unavailable (YouTube bridge offline and track title could not be resolved).`);
+    throw new Error(`Song not found on SoundCloud (unresolved title)`);
+  }
+
+  const strippedTitle = rawTitle
     .replace(/^(?:video\s*song|full\s*video|official\s*video|audio\s*song)\s*[-:]\s*/i, '')
     .replace(/[#|/]/g, ' ')
     .replace(/\b(official|music|video|song|full|lyrics|hd|4k)\b/gi, '')
+    .replace(/\s+/g, ' ')
     .trim();
+  const cleanTitle = strippedTitle || rawTitle;
 
   const scTarget = isDirectSoundCloud ? url : `scsearch1:${cleanTitle} original -cover -nightcore -slowed -reverb -karaoke`;
   console.log(`⚡ [Downloader] SoundCloud: Fetching audio for "${cleanTitle || url}"...`);
 
   try {
-    await executeYtdlpDownload(scTarget, outputPath, thisStreamId, false);
+    await executeYtdlpDownload(scTarget, outputPath, thisStreamId);
     const stats = fs.statSync(outputPath);
     if (stats.size > 50000) {
-      setImmediate(async () => {
-        try {
-          await saveSongToPersistentCache(outputPath, cacheKey, metadata, isDirectSoundCloud ? 'soundcloud' : 'youtube');
-        } catch (_) {}
-      });
+      await saveSongToPersistentCache(outputPath, cacheKey, metadata, isDirectSoundCloud ? 'soundcloud' : 'youtube');
       return outputPath;
     }
   } catch (scErr) {
     if (!isDirectSoundCloud && cleanTitle) {
       try {
         console.warn(`⚠️ [Downloader] Filtered SoundCloud failed, retrying standard query...`);
-        await executeYtdlpDownload(`scsearch1:${cleanTitle}`, outputPath, thisStreamId, false);
+        await executeYtdlpDownload(`scsearch1:${cleanTitle}`, outputPath, thisStreamId);
         const stats = fs.statSync(outputPath);
         if (stats.size > 50000) {
-          setImmediate(async () => {
-            try {
-              await saveSongToPersistentCache(outputPath, cacheKey, metadata, isDirectSoundCloud ? 'soundcloud' : 'youtube');
-            } catch (_) {}
-          });
+          await saveSongToPersistentCache(outputPath, cacheKey, metadata, isDirectSoundCloud ? 'soundcloud' : 'youtube');
           return outputPath;
         }
       } catch (scErr2) {}
@@ -2329,7 +2330,7 @@ async function startStream(url, title, metadata) {
     }
     
     console.log(`🎙️ Announcement: ${announcementText}`);
-    const ttsHash = crypto.createHash('md5').update(announcementText).digest('hex').slice(0, 16);
+    const ttsHash = crypto.createHash('md5').update(`${announcementVoice}:${announcementText}`).digest('hex').slice(0, 16);
     
     try {
       const ttsBuffer = await generateTTSAudio(announcementText);
@@ -2892,6 +2893,7 @@ app.post("/play", async (req, res) => {
   try {
     let videoUrl = url;
     let metadata = null;
+    let resolvedVideoId = null;
     
     if (isValidYouTubeURL(url)) {
       videoUrl = url;
@@ -2905,6 +2907,7 @@ app.post("/play", async (req, res) => {
           videoId = urlObj.searchParams.get('v');
         }
       } catch (e) {}
+      resolvedVideoId = videoId;
       
       if (videoId) {
         try {
@@ -2936,7 +2939,13 @@ app.post("/play", async (req, res) => {
     }
     
     if (!metadata) {
-      metadata = { title: "Unknown Track", artist: "Unknown Artist", duration: "Unknown" };
+      metadata = {
+        url: videoUrl,
+        ...(resolvedVideoId ? { videoId: resolvedVideoId } : {}),
+        ...(isValidYouTubeURL(url) ? { skipSoundCloudFallback: true } : {}),
+        artist: "Unknown Artist",
+        duration: "Unknown"
+      };
     }
     
     if (sourcePlaylist) {
