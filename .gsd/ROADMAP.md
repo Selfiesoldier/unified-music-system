@@ -1,8 +1,8 @@
 # Project Roadmap: Highrise Music Fleet & Engine
 
-> **Current Milestone:** Milestone 3: Main Controller Hardening & Optimization (Phase 9 Complete ✅)
-> **Current Phase:** Phase 9 — Complete
-> **Status:** complete
+> **Current Milestone:** Milestone 4: Audio Server Hardening & Bug Fixes
+> **Current Phase:** Phase 10 — Planned
+> **Status:** planned
 
 ---
 
@@ -79,3 +79,13 @@
 - [x] Plan 9.3: Reliability, Lifecycle, Watchdog & UI Fixes (`server.js`, `sw.js`, `package.json`, `public/`) [Wave 1]
 - [x] Plan 9.1: Security & Access Lockdown (`server.js`, `public/js/app.js`, `residential/manager.js`, `bot/home_bridge_manager.js`) [Wave 2]
 - [x] Plan 9.4: Memory Guard, Async I/O & Dead Code Cleanup (`server.js`, `package.json`) [Wave 2]
+
+---
+
+## Milestone 4: Audio Server Hardening & Bug Fixes
+
+### Phase 10: Audio Server Bug Fixes, Security & Memory Guards
+- **Status:** Planned 📋
+- **Goal:** Fix broken `/announce` (`streamAnnouncementMp3`), `/flush` ring-buffer pointer reset, missing proxy/fetch timeouts, `X-Forwarded-For` DDoS/whitelist spoofing, unbounded track/load-test memory, and unused imports in `audio-server/`.
+- [ ] Plan 10.1: Audio Server Bug Fixes & Memory/Timeout Guards (`audio-server/server.js`, `audio-server/src/audioPlayer.js`) [Wave 1]
+- [ ] Plan 10.2: Audio Server Security Hardening & Dead Code Cleanup (`audio-server/server.js`) [Wave 1]
