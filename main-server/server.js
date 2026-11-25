@@ -625,7 +625,10 @@ async function ensureYtDlp() {
   console.log("⬇️ Downloading latest yt-dlp binary from GitHub...");
   
   try {
-    const response = await fetch(YTDLP_URL, { redirect: 'follow' });
+    const response = await fetch(YTDLP_URL, {
+      redirect: 'follow',
+      signal: AbortSignal.timeout(60000)
+    });
     
     if (!response.ok) {
       console.error(`❌ yt-dlp download failed: HTTP ${response.status}`);
@@ -751,9 +754,17 @@ async function generateTTSAudio(text) {
   try {
     console.log(`🎙️ Generating TTS: "${text.substring(0, 50)}..."`);
     
-    const url = await googleTTS(text, announcementVoice, 1);
+    let ttsUrlTimer = null;
+    const url = await Promise.race([
+      Promise.resolve(googleTTS(text, announcementVoice, 1)),
+      new Promise((_, reject) => {
+        ttsUrlTimer = setTimeout(() => reject(new Error('TTS URL generation timed out')), 8000);
+      })
+    ]).finally(() => {
+      if (ttsUrlTimer) clearTimeout(ttsUrlTimer);
+    });
     
-    const response = await fetch(url);
+    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!response.ok) {
       throw new Error(`TTS fetch failed: ${response.status}`);
     }
@@ -767,6 +778,8 @@ async function generateTTSAudio(text) {
     return null;
   }
 }
+
+let activeTtsDecoder = null;
 
 async function injectTTSToStream(ttsBuffer, onDecoded = null, cacheKey = null) {
   const cachedPcmPath = cacheKey ? path.join(CACHE_DIR, `tts_${cacheKey}.pcm`) : null;
@@ -812,8 +825,27 @@ async function injectTTSToStream(ttsBuffer, onDecoded = null, cacheKey = null) {
     ], {
       stdio: ['pipe', 'pipe', 'pipe']
     });
+    activeTtsDecoder = ttsDecoder;
     
     let pcmData = [];
+    let decodeSettled = false;
+
+    const decodeTimeout = setTimeout(() => {
+      if (decodeSettled) return;
+      decodeSettled = true;
+      console.error('⚠️ TTS decoder timed out after 15s, terminating process');
+      try {
+        if (ttsDecoder.stdin && !ttsDecoder.stdin.destroyed) ttsDecoder.stdin.destroy();
+        if (ttsDecoder.stdout && !ttsDecoder.stdout.destroyed) ttsDecoder.stdout.destroy();
+        if (ttsDecoder.stderr && !ttsDecoder.stderr.destroyed) ttsDecoder.stderr.destroy();
+        if (!ttsDecoder.killed) ttsDecoder.kill('SIGKILL');
+      } catch (_) {}
+      if (activeTtsDecoder === ttsDecoder) activeTtsDecoder = null;
+      if (typeof onDecoded === 'function') {
+        try { onDecoded(); } catch (e) {}
+      }
+      resolve(false);
+    }, 15000);
     
     ttsDecoder.stdout.on('data', (chunk) => {
       pcmData.push(chunk);
@@ -827,6 +859,11 @@ async function injectTTSToStream(ttsBuffer, onDecoded = null, cacheKey = null) {
     });
     
     ttsDecoder.on('close', async (code) => {
+      clearTimeout(decodeTimeout);
+      if (activeTtsDecoder === ttsDecoder) activeTtsDecoder = null;
+      if (decodeSettled) return;
+      decodeSettled = true;
+
       if (typeof onDecoded === 'function') {
         try { onDecoded(); } catch (e) {}
       }
@@ -856,6 +893,11 @@ async function injectTTSToStream(ttsBuffer, onDecoded = null, cacheKey = null) {
     });
     
     ttsDecoder.on('error', (err) => {
+      clearTimeout(decodeTimeout);
+      if (activeTtsDecoder === ttsDecoder) activeTtsDecoder = null;
+      if (decodeSettled) return;
+      decodeSettled = true;
+
       if (typeof onDecoded === 'function') {
         try { onDecoded(); } catch (e) {}
       }
@@ -875,10 +917,13 @@ async function injectTTSToStream(ttsBuffer, onDecoded = null, cacheKey = null) {
 const SILENCE_50MS_PCM = Buffer.alloc(Math.floor((44100 * 50) / 1000) * 2 * 2, 0);
 const SILENCE_300MS_PCM = Buffer.alloc(Math.floor((44100 * 300) / 1000) * 2 * 2, 0);
 
+const MAX_STREAM_CLIENTS = 100;
+
 class PersistentStreamManager {
   constructor() {
     this.clients = new Set();
     this.clientMetadata = new Map();
+    this.maxClients = MAX_STREAM_CLIENTS;
     this.audioBuffer = [];
     this.maxBufferSize = 200;
     this.instantStartChunks = 25;
@@ -896,13 +941,14 @@ class PersistentStreamManager {
     this.isEncoderRunning = false;
     this.isSendingSilence = false;
     this.silenceInterval = null;
+    this.isShuttingDown = false;
     
     this.transitionSilenceMs = 150;
     this.transitionPcm = null;
     this.transitionOffset = 0;
     this.loadTransitionTrack();
     
-    setInterval(() => {
+    this.clientMaintenanceInterval = setInterval(() => {
       const now = Date.now();
       for (const [client, meta] of this.clientMetadata) {
         if (meta.writeFailures > 0) {
@@ -917,6 +963,7 @@ class PersistentStreamManager {
   }
   
   startPersistentEncoder() {
+    if (this.isShuttingDown) return;
     if (this.isEncoderRunning) {
       console.log('🔧 Persistent encoder already running');
       return;
@@ -958,12 +1005,13 @@ class PersistentStreamManager {
     this.persistentEncoder.on('error', (err) => {
       console.error('❌ Persistent encoder error:', err.message);
       this.isEncoderRunning = false;
-      this.restartEncoder();
+      if (!this.isShuttingDown) this.restartEncoder();
     });
     
     this.persistentEncoder.on('close', (code) => {
-      console.error(`⚠️ Persistent encoder closed with code ${code} - RESTARTING`);
       this.isEncoderRunning = false;
+      if (this.isShuttingDown) return;
+      console.error(`⚠️ Persistent encoder closed with code ${code} - RESTARTING`);
       this.restartEncoder();
     });
     
@@ -977,7 +1025,7 @@ class PersistentStreamManager {
   }
   
   restartEncoder() {
-    if (this.isEncoderRunning || this.restartTimeout) return;
+    if (this.isShuttingDown || this.isEncoderRunning || this.restartTimeout) return;
     
     this.restartAttempts = (this.restartAttempts || 0) + 1;
     const delay = Math.min(1000 * Math.pow(1.5, Math.min(this.restartAttempts - 1, 6)), 15000);
@@ -1174,7 +1222,26 @@ class PersistentStreamManager {
     return Buffer.concat(frames);
   }
   
+  isAtClientLimit() {
+    if (this.clients.size >= this.maxClients) {
+      for (const client of this.clients) {
+        if (client.destroyed || client.writableEnded) {
+          this.removeClient(client);
+        }
+      }
+    }
+    return this.clients.size >= this.maxClients;
+  }
+
   addClient(res, req) {
+    if (this.isAtClientLimit()) {
+      try {
+        if (!res.headersSent) res.status(503);
+        res.end('Stream capacity reached');
+      } catch (_) {}
+      return false;
+    }
+
     const now = Date.now();
     
     const clientInfo = {
@@ -1339,13 +1406,65 @@ class PersistentStreamManager {
   getHealthStatus() {
     return {
       encoderPID: this.persistentEncoder?.pid || null,
-      encoderAlive: this.persistentEncoder && !this.persistentEncoder.killed,
+      encoderAlive: Boolean(
+        this.persistentEncoder &&
+        !this.persistentEncoder.killed &&
+        this.persistentEncoder.exitCode === null &&
+        this.isEncoderRunning
+      ),
       isEncoderRunning: this.isEncoderRunning,
       clientCount: this.clients.size,
+      maxClients: this.maxClients,
       isSendingSilence: this.isSendingSilence
     };
   }
   
+  shutdown() {
+    this.isShuttingDown = true;
+    this.isSendingSilence = false;
+    if (this.silenceInterval) {
+      clearInterval(this.silenceInterval);
+      this.silenceInterval = null;
+    }
+    if (this.restartTimeout) {
+      clearTimeout(this.restartTimeout);
+      this.restartTimeout = null;
+    }
+    if (this.clientMaintenanceInterval) {
+      clearInterval(this.clientMaintenanceInterval);
+      this.clientMaintenanceInterval = null;
+    }
+    this.isEncoderRunning = false;
+    if (this.pcmInputStream && !this.pcmInputStream.destroyed) {
+      try { this.pcmInputStream.destroy(); } catch (_) {}
+    }
+    if (this.persistentEncoder) {
+      try {
+        if (this.persistentEncoder.stdin && !this.persistentEncoder.stdin.destroyed) {
+          this.persistentEncoder.stdin.destroy();
+        }
+        if (this.persistentEncoder.stdout && !this.persistentEncoder.stdout.destroyed) {
+          this.persistentEncoder.stdout.destroy();
+        }
+        if (this.persistentEncoder.stderr && !this.persistentEncoder.stderr.destroyed) {
+          this.persistentEncoder.stderr.destroy();
+        }
+        if (!this.persistentEncoder.killed) {
+          this.persistentEncoder.kill('SIGKILL');
+        }
+      } catch (_) {}
+      this.persistentEncoder = null;
+    }
+    for (const client of this.clients) {
+      try {
+        client.end();
+        if (typeof client.destroy === 'function') client.destroy();
+      } catch (_) {}
+    }
+    this.clients.clear();
+    this.clientMetadata.clear();
+  }
+
   clear() {
     this.clients.clear();
     this.clientMetadata.clear();
@@ -1812,6 +1931,8 @@ async function enforceGlobalCacheLimit() {
 
 const streamManager = new PersistentStreamManager();
 
+const MAX_QUEUE_LENGTH = 200;
+
 function loadQueue() {
   try {
     if (fs.existsSync(QUEUE_FILE)) {
@@ -1823,8 +1944,9 @@ function loadQueue() {
         return [];
       }
       
-      console.log(`📂 Loaded ${savedQueue.length} songs from saved queue`);
-      return savedQueue;
+      const boundedQueue = savedQueue.slice(0, MAX_QUEUE_LENGTH);
+      console.log(`📂 Loaded ${boundedQueue.length} songs from saved queue`);
+      return boundedQueue;
     }
   } catch (err) {
     console.error('⚠️ Failed to load queue:', err.message);
@@ -1883,6 +2005,34 @@ function savePlaybackState() {
       console.error('⚠️ Failed to save playback state:', err.message);
     }
   }, 100);
+}
+
+async function flushState() {
+  if (saveQueueTimer) {
+    clearTimeout(saveQueueTimer);
+    saveQueueTimer = null;
+  }
+  if (savePlaybackStateTimer) {
+    clearTimeout(savePlaybackStateTimer);
+    savePlaybackStateTimer = null;
+  }
+  try {
+    await atomicWrite(QUEUE_FILE, JSON.stringify(queue));
+  } catch (err) {
+    console.error('⚠️ Failed to flush queue state:', err.message);
+  }
+  try {
+    const state = {
+      isPlaying,
+      currentTitle,
+      currentMetadata,
+      currentIsAutoplay,
+      savedAt: Date.now()
+    };
+    await atomicWrite(PLAYBACK_STATE_FILE, JSON.stringify(state));
+  } catch (err) {
+    console.error('⚠️ Failed to flush playback state:', err.message);
+  }
 }
 
 const metadataCache = new Map();
@@ -2515,9 +2665,26 @@ async function startStream(url, title, metadata) {
     decoderFinished = true;
   });
 
-  // Wait for initial pre-buffer (0.5s cushion = 88,200 bytes)
+  // Wait for initial pre-buffer (0.5s cushion = 88,200 bytes) with 15s timeout
+  const preBufferDeadline = Date.now() + 15000;
   while (queuedBytes < 88200 && !decoderFinished) {
     if (thisStreamId !== currentStreamId) return;
+    if (Date.now() >= preBufferDeadline) {
+      console.warn(`⚠️ Pre-buffer timeout (15s) waiting for "${title}" (${queuedBytes} bytes buffered)`);
+      if (queuedBytes === 0) {
+        try {
+          if (currentDecoder && currentDecoder.stdout && !currentDecoder.stdout.destroyed) {
+            currentDecoder.stdout.destroy();
+          }
+          if (currentDecoder && !currentDecoder.killed) {
+            currentDecoder.kill('SIGKILL');
+          }
+        } catch (_) {}
+        currentDecoder = null;
+        decoderFinished = true;
+      }
+      break;
+    }
     await new Promise(r => setTimeout(r, 20));
   }
 
@@ -2720,8 +2887,20 @@ function stopPlayback() {
   streamManager.resumeSilenceFeed();
 }
 
+const MAX_SSE_CLIENTS = 50;
 const sseClients = new Set();
 app.get("/events", (req, res) => {
+  if (sseClients.size >= MAX_SSE_CLIENTS) {
+    for (const client of sseClients) {
+      if (client.destroyed || client.writableEnded) {
+        sseClients.delete(client);
+      }
+    }
+  }
+  if (sseClients.size >= MAX_SSE_CLIENTS) {
+    return res.status(503).send({ error: "Too many active SSE clients" });
+  }
+
   res.writeHead(200, {
     "Content-Type": "text/event-stream",
     "Cache-Control": "no-cache",
@@ -2889,6 +3068,10 @@ app.post("/play", async (req, res) => {
   if (!url) {
     return res.status(400).send({ error: "Missing URL or search query" });
   }
+
+  if (queue.length >= MAX_QUEUE_LENGTH) {
+    return res.status(429).send({ error: `Queue is full (maximum ${MAX_QUEUE_LENGTH} songs)` });
+  }
   
   try {
     let videoUrl = url;
@@ -2960,6 +3143,10 @@ app.post("/play", async (req, res) => {
       metadata.dedicatedBy = dedicatedBy;
     }
     
+    if (queue.length >= MAX_QUEUE_LENGTH) {
+      return res.status(429).send({ error: `Queue is full (maximum ${MAX_QUEUE_LENGTH} songs)` });
+    }
+
     queue.push({ url: videoUrl, metadata, isAutoplay });
     saveQueue();
     
@@ -2999,6 +3186,10 @@ app.post("/insert", async (req, res) => {
   if (!url) {
     return res.status(400).send({ error: "No URL or search query provided" });
   }
+
+  if (queue.length >= MAX_QUEUE_LENGTH) {
+    return res.status(429).send({ error: `Queue is full (maximum ${MAX_QUEUE_LENGTH} songs)` });
+  }
   
   console.log("⏫ INSERT command - Adding to front of queue:", url);
   let videoUrl = url;
@@ -3036,6 +3227,10 @@ app.post("/insert", async (req, res) => {
       metadata.dedicatedBy = dedicatedBy;
     }
     
+    if (queue.length >= MAX_QUEUE_LENGTH) {
+      return res.status(429).send({ error: `Queue is full (maximum ${MAX_QUEUE_LENGTH} songs)` });
+    }
+
     queue.unshift({ url: videoUrl, metadata, isAutoplay: false });
     saveQueue();
     
@@ -3163,7 +3358,8 @@ app.get("/stats", (req, res) => {
 
 app.get("/health", (req, res) => {
   const health = streamManager.getHealthStatus();
-  res.send({
+  const statusCode = health.encoderAlive ? 200 : 503;
+  res.status(statusCode).send({
     status: health.encoderAlive ? "healthy" : "unhealthy",
     ...health,
     isPlaying,
@@ -3469,6 +3665,10 @@ async function playNext() {
 }
 
 app.get(["/stream", "/STREAM"], (req, res) => {
+  if (streamManager.isAtClientLimit()) {
+    return res.status(503).send({ error: "Maximum stream listener capacity reached" });
+  }
+
   if (res.socket) {
     res.socket.setNoDelay(true);
   }
@@ -3632,7 +3832,8 @@ app.post("/api/bot-command", async (req, res) => {
       
       // Fetch roster to validate user exists
       const rosterRes = await fetch(`http://127.0.0.1:5001/api/roster`, {
-        headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+        headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+        signal: AbortSignal.timeout(8000)
       });
       const rosterData = await rosterRes.json();
       
@@ -3661,7 +3862,8 @@ app.post("/api/bot-command", async (req, res) => {
         "Content-Type": "application/json",
         "X-IPC-Secret": process.env.IPC_SECRET
       },
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3717,7 +3919,8 @@ app.post("/api/access", async (req, res) => {
         "Content-Type": "application/json",
         "X-IPC-Secret": process.env.IPC_SECRET
       },
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3730,7 +3933,8 @@ app.get("/api/economy", async (req, res) => {
   try {
     const response = await fetch(`http://127.0.0.1:5001/api/economy`, {
       method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3747,7 +3951,8 @@ app.post("/api/economy", async (req, res) => {
         "Content-Type": "application/json",
         "X-IPC-Secret": process.env.IPC_SECRET
       },
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3764,7 +3969,8 @@ app.post("/api/terminal", async (req, res) => {
         "Content-Type": "application/json",
         "X-IPC-Secret": process.env.IPC_SECRET
       },
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3781,7 +3987,8 @@ app.post("/api/mode", async (req, res) => {
         "Content-Type": "application/json",
         "X-IPC-Secret": process.env.IPC_SECRET
       },
-      body: JSON.stringify(req.body)
+      body: JSON.stringify(req.body),
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3805,7 +4012,8 @@ app.get("/api/stats", async (req, res) => {
   try {
     const response = await fetch(`http://127.0.0.1:5001/api/stats`, {
       method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3818,7 +4026,8 @@ app.get("/api/playlists", async (req, res) => {
   try {
     const response = await fetch(`http://127.0.0.1:5001/api/playlists`, {
       method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3831,7 +4040,8 @@ app.get("/api/outfits", async (req, res) => {
   try {
     const response = await fetch(`http://127.0.0.1:5001/api/outfits`, {
       method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3844,7 +4054,8 @@ app.get("/api/locations", async (req, res) => {
   try {
     const response = await fetch(`http://127.0.0.1:5001/api/locations`, {
       method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3858,7 +4069,8 @@ app.get("/api/shop", async (req, res) => {
     const q = req.query.q || '';
     const response = await fetch(`http://127.0.0.1:5001/api/shop?q=${encodeURIComponent(q)}`, {
       method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3871,7 +4083,8 @@ app.get("/api/history", async (req, res) => {
   try {
     const response = await fetch(`http://127.0.0.1:5001/api/history`, {
       method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3893,7 +4106,8 @@ app.get("/api/roster", async (req, res) => {
   try {
     const response = await fetch(`http://127.0.0.1:5001/api/roster`, {
       method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     });
     const result = await response.json();
     res.status(response.status).send(result);
@@ -3918,7 +4132,8 @@ app.post("/api/restart", async (req, res) => {
     // Try to restart Python bot via IPC
     await fetch(`http://127.0.0.1:5001/api/restart`, {
       method: "POST",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET }
+      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
+      signal: AbortSignal.timeout(8000)
     }).catch(e => null);
   } catch(e) {}
   
@@ -3949,7 +4164,8 @@ const playbackState = loadPlaybackState();
 
 streamManager.startPersistentEncoder();
 
-setInterval(() => {
+const healthCheckInterval = setInterval(() => {
+  if (isShuttingDown) return;
   const health = streamManager.getHealthStatus();
   if (!health.encoderAlive) {
     console.error('⚠️ Health check: Encoder not alive, restarting...');
@@ -3958,7 +4174,7 @@ setInterval(() => {
 }, 30000);
 
 // Periodic memory maintenance: sweep expired cache and invoke GC if exposed
-setInterval(() => {
+const memoryMaintenanceInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, val] of metadataCache.entries()) {
     if (now - val.timestamp > CACHE_TTL) {
@@ -3974,7 +4190,7 @@ setInterval(() => {
 
 
 // 🛡️ Memory Guard - Periodically check memory without stalling the audio thread
-setInterval(() => {
+const memoryGuardInterval = setInterval(() => {
   const mem = process.memoryUsage();
   const rssMb = (mem.rss / 1024 / 1024).toFixed(1);
   const heapMb = (mem.heapUsed / 1024 / 1024).toFixed(1);
@@ -3991,7 +4207,7 @@ setInterval(() => {
 }, 120000);
 
 // 🧹 Periodic Disk Cache Guardian (Every 10 min: TTL purge TTS, LRU evict songs, keep size <= MAX_CACHE_SIZE_BYTES)
-setInterval(async () => {
+const cacheGuardianInterval = setInterval(async () => {
   try {
     await enforceGlobalCacheLimit();
   } catch (e) {
@@ -4003,6 +4219,9 @@ setInterval(async () => {
 
 const rawPort = process.env.PORT || process.env.SERVER_PORT || 30191;
 const PORT = parseInt(String(rawPort).trim(), 10) || 30191;
+let activeHttpServer = null;
+let keepAliveInterval = null;
+let isShuttingDown = false;
 
 function listenWithRetry(port, retriesLeft = 10) {
   const server = app.listen(port, "0.0.0.0", async () => {
@@ -4055,20 +4274,21 @@ function listenWithRetry(port, retriesLeft = 10) {
       console.log("▶️ Auto-starting playback from saved queue...");
       
       setTimeout(() => {
-        playNext();
+        if (!isShuttingDown) playNext();
       }, 2000);
     }
   });
 
+  activeHttpServer = server;
   server.keepAliveTimeout = 120000;
   server.headersTimeout = 125000;
   server.timeout = 0;
 
   server.on("error", (err) => {
-    if (err.code === "EADDRINUSE" && retriesLeft > 0) {
+    if (err.code === "EADDRINUSE" && retriesLeft > 0 && !isShuttingDown) {
       console.log(`⚠️ Port ${port} is in use (socket releasing). Retrying in 3 seconds... (${retriesLeft} retries left)`);
       setTimeout(() => {
-        listenWithRetry(port, retriesLeft - 1);
+        if (!isShuttingDown) listenWithRetry(port, retriesLeft - 1);
       }, 3000);
     } else {
       console.error("❌ Music server error:", err);
@@ -4092,11 +4312,11 @@ function armRenderKeepAlive() {
   console.log(`🛡️ [Keep-Alive Sentinel] Armed 24/7 anti-sleep pinger -> ${pingEndpoint}`);
 
   // Ping every 7 minutes (Render free tier spins down after 15 minutes of no HTTP traffic)
-  setInterval(async () => {
+  keepAliveInterval = setInterval(async () => {
     try {
       const res = await fetch(pingEndpoint, { 
         headers: { 'User-Agent': 'MusicEngine-KeepAlive/1.0' },
-        timeout: 10000 
+        signal: AbortSignal.timeout(10000)
       });
       if (res.ok) {
         console.log(`💓 [Keep-Alive Sentinel] Ping successful at ${new Date().toISOString().slice(11, 19)} (Render sleep timer reset)`);
@@ -4108,3 +4328,72 @@ function armRenderKeepAlive() {
 }
 
 armRenderKeepAlive();
+
+async function gracefulShutdown(signal) {
+  if (isShuttingDown) return;
+  isShuttingDown = true;
+  console.log(`🛑 [Shutdown] Received ${signal}, flushing state and stopping child processes...`);
+
+  const forceExitTimer = setTimeout(() => {
+    console.error('⚠️ [Shutdown] Force exiting after 5s timeout');
+    process.exit(1);
+  }, 5000);
+  forceExitTimer.unref();
+
+  clearInterval(healthCheckInterval);
+  clearInterval(memoryMaintenanceInterval);
+  clearInterval(memoryGuardInterval);
+  clearInterval(cacheGuardianInterval);
+  if (keepAliveInterval) {
+    clearInterval(keepAliveInterval);
+    keepAliveInterval = null;
+  }
+
+  await flushState();
+
+  try {
+    killCurrentStream();
+  } catch (_) {}
+
+  if (activeTtsDecoder && !activeTtsDecoder.killed) {
+    try {
+      if (activeTtsDecoder.stdin && !activeTtsDecoder.stdin.destroyed) activeTtsDecoder.stdin.destroy();
+      if (activeTtsDecoder.stdout && !activeTtsDecoder.stdout.destroyed) activeTtsDecoder.stdout.destroy();
+      activeTtsDecoder.kill('SIGKILL');
+    } catch (_) {}
+    activeTtsDecoder = null;
+  }
+
+  try {
+    streamManager.shutdown();
+  } catch (_) {}
+
+  if (broadcastTimeout) {
+    clearTimeout(broadcastTimeout);
+    broadcastTimeout = null;
+  }
+  for (const client of sseClients) {
+    try {
+      client.end();
+      if (typeof client.destroy === 'function') client.destroy();
+    } catch (_) {}
+  }
+  sseClients.clear();
+
+  if (activeHttpServer) {
+    try {
+      if (typeof activeHttpServer.closeAllConnections === 'function') {
+        activeHttpServer.closeAllConnections();
+      }
+      await new Promise((resolve) => activeHttpServer.close(() => resolve()));
+    } catch (_) {}
+    activeHttpServer = null;
+  }
+
+  clearTimeout(forceExitTimer);
+  console.log('✅ [Shutdown] Clean shutdown complete');
+  process.exit(0);
+}
+
+process.on('SIGINT', () => { gracefulShutdown('SIGINT'); });
+process.on('SIGTERM', () => { gracefulShutdown('SIGTERM'); });
