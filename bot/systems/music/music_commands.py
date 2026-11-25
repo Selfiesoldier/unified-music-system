@@ -2,6 +2,9 @@
 Music commands - All music-related bot commands
 """
 import asyncio
+import json
+import os
+from pathlib import Path
 from .music_manager import MusicManager
 from .queue_manager import QueueManager
 from .skip_vote_manager import SkipVoteManager
@@ -9,6 +12,44 @@ from core.cooldowns import check_cd
 from core.color_formatter import Colors, MessageFormatter, BeautifulMessages
 from core.context import message_context, conversation_context
 from core.message_utils import MessageChunker
+
+MUSIC_SETTINGS_FILE = Path(__file__).resolve().parents[2] / "data" / "music_settings.json"
+
+
+def load_max_song_duration(default: int = 600) -> int:
+    """Load persisted max_song_duration (seconds) from disk, returning default if unset."""
+    try:
+        if MUSIC_SETTINGS_FILE.exists():
+            with open(MUSIC_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+            val = data.get("max_song_duration")
+            if isinstance(val, (int, float)) and val >= 0:
+                return int(val)
+    except Exception as e:
+        print(f"⚠️ Failed to load music_settings.json: {e}")
+    return default
+
+
+def save_max_song_duration(seconds: int) -> None:
+    """Persist max_song_duration (seconds) atomically to disk."""
+    try:
+        MUSIC_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        data = {}
+        if MUSIC_SETTINGS_FILE.exists():
+            try:
+                with open(MUSIC_SETTINGS_FILE, "r", encoding="utf-8") as f:
+                    loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                pass
+        data["max_song_duration"] = int(seconds)
+        tmp_file = MUSIC_SETTINGS_FILE.with_suffix(".tmp")
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp_file, MUSIC_SETTINGS_FILE)
+    except Exception as e:
+        print(f"⚠️ Failed to save music_settings.json: {e}")
 
 
 def chunk_message(text, max_length=240):
@@ -820,6 +861,7 @@ def register(bot):
                 return
             
             bot.max_song_duration = minutes * 60
+            save_max_song_duration(bot.max_song_duration)
             
             if minutes == 0:
                 msg = f"{Colors.MINT}⏱️ Song limit {Colors.GREEN}disabled\n{Colors.LIGHT_GRAY}Songs of any length allowed"

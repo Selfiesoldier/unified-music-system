@@ -28,6 +28,7 @@ import time
 import random
 # Import all managers
 from systems.music import MusicManager, QueueManager
+from systems.music.music_commands import load_max_song_duration
 from systems.economy import EconomyManager
 from systems.admin import AdminManager, FreeMusicManager
 from systems.outfits import InventoryManager, AvatarOutfitManager
@@ -140,7 +141,7 @@ class MusicBot(BaseBot):
         self.auto_play_enabled = True
         self.free_music_until = None
         self.bot_user_id = None
-        self.max_song_duration = 600  # Default: 10 minutes (600 seconds), 0 = no limit
+        self.max_song_duration = load_max_song_duration(default=600)  # Default: 10 minutes (600 seconds), 0 = no limit
         
         # Background tasks (legacy references for free_music_timer)
         self.free_music_task = None
@@ -206,7 +207,7 @@ class MusicBot(BaseBot):
             await self.highrise.chat(message)
 
     async def ensure_bot_presence(self, force: bool = False):
-        """Ensure bot avatar entity is physically spawned and visible in the room scene"""
+        """Ensure bot avatar entity is physically spawned and visible in the room scene without teleport flash"""
         if not self.bot_user_id:
             return
         
@@ -215,16 +216,14 @@ class MusicBot(BaseBot):
             return
         self._last_presence_time = now
         
-        if self.position_manager and self.position_manager.has_position():
+        # Smoothly trigger a free emote to force Highrise Unity 3D engine to render avatar without visual teleport pop
+        free_presence_emotes = ["dance-tiktok8", "dance-macarena", "emote-tired", "dance-shoppingcart", "idle-dance-casual"]
+        for em in free_presence_emotes:
             try:
-                await self.position_manager.ensure_home_position(self)
-                # Trigger an emote to force the Highrise 3D room engine to render the avatar
-                try:
-                    await self.highrise.send_emote("idle-dance-headbobbing", self.bot_user_id)
-                except Exception:
-                    pass
-            except Exception as e:
-                print(f"⚠️ Failed to maintain bot position presence: {e}")
+                await self.highrise.send_emote(em, self.bot_user_id)
+                break
+            except Exception:
+                continue
 
     async def on_start(self, session_metadata):
         """Called when bot connects to room"""
@@ -237,6 +236,9 @@ class MusicBot(BaseBot):
         self._core_highrise = self.highrise
         self.highrise = ChunkingHighriseProxy(self._core_highrise)
         print("✅ Universal message chunking enabled via proxy - ALL messages will be auto-chunked")
+        
+        # Start connection manager immediately so heartbeats, watchdog and pings start without waiting on any startup chat
+        await self.connection_manager.start()
         
         # Log system event
         write_system_log(f"Bot connected to Highrise | Bot ID: {session_metadata.user_id}")
@@ -260,7 +262,10 @@ class MusicBot(BaseBot):
             f"{Colors.MINT}💬 DM me 'help' for the full guide!\n\n"
             f"{Colors.RAINBOW_1}Let's vibe together! 🎉"
         )
-        await self.send_message(welcome_msg)
+        try:
+            await asyncio.wait_for(self.send_message(welcome_msg), timeout=4.0)
+        except Exception as e:
+            print(f"⚠️ Startup welcome message skipped/timed out: {e}")
         
         # Load inventory
         self.inventory_manager.load_inventory()
@@ -315,8 +320,7 @@ class MusicBot(BaseBot):
         except Exception as e:
             print(f"⚠️ Failed to restore queue: {e}")
         
-        # Start connection manager first
-        await self.connection_manager.start()
+        # Background tasks initialization
         
         # Start all background tasks via Background Task Manager
         print("\n🚀 Starting background tasks via BTM...")
@@ -524,6 +528,13 @@ async def run_bot_with_watchdog():
                     await task
                 except (asyncio.CancelledError, Exception):
                     pass
+            
+            # Ensure background tasks from the completed session are stopped before creating next bot
+            try:
+                if hasattr(bot, 'background_manager'):
+                    await bot.background_manager.stop_all_tasks()
+            except Exception:
+                pass
             
             # Check if restart was triggered
             if restart_task in done:
