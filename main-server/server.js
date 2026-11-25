@@ -2114,13 +2114,64 @@ async function ytsWithTimeout(arg, timeoutMs = 8000) {
   }
 }
 
+function parseTimestampToSeconds(ts) {
+  if (!ts || typeof ts !== "string") return 0;
+  const parts = ts.trim().split(":").map(Number);
+  if (parts.some(Number.isNaN)) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 1) return parts[0];
+  return 0;
+}
+
+async function searchYouTubeViaInnerTube(query, timeoutMs = 5000) {
+  const res = await fetch("https://www.youtube.com/youtubei/v1/search?prettyPrint=false", {
+    method: "POST",
+    headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
+    body: JSON.stringify({
+      context: { client: { clientName: "WEB", clientVersion: "2.20240724.00.00", hl: "en", gl: "US" } },
+      query: String(query)
+    }),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (!res.ok) throw new Error(`InnerTube HTTP ${res.status}`);
+  const data = await res.json();
+  const contents = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+  for (const sec of contents) {
+    const items = sec?.itemSectionRenderer?.contents || [];
+    for (const it of items) {
+      const v = it?.videoRenderer;
+      if (v && v.videoId) {
+        const title = v.title?.runs?.map(r => r.text).join("") || "Unknown Track";
+        const artist = v.ownerText?.runs?.[0]?.text || v.longBylineText?.runs?.[0]?.text || "Unknown Artist";
+        const duration = v.lengthText?.simpleText || "Unknown";
+        const durationSeconds = parseTimestampToSeconds(duration);
+        const thumbs = v.thumbnail?.thumbnails || [];
+        const thumbnail = thumbs.length > 0 ? thumbs[thumbs.length - 1].url : "";
+        return {
+          url: `https://youtube.com/watch?v=${v.videoId}`,
+          title,
+          artist,
+          duration,
+          durationSeconds,
+          views: v.viewCountText?.simpleText || "0",
+          thumbnail,
+          ago: v.publishedTimeText?.simpleText || "",
+          videoId: v.videoId
+        };
+      }
+    }
+  }
+  return null;
+}
+
 async function searchYouTube(query) {
   const cacheKey = `search:${query}`;
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
   try {
-    const results = await ytsWithTimeout(query, 8000);
+    const results = await ytsWithTimeout(query, 4500);
     if (results.videos && results.videos.length > 0) {
       const video = results.videos[0];
       const result = {
@@ -2137,9 +2188,19 @@ async function searchYouTube(query) {
       setCache(cacheKey, result);
       return result;
     }
+  } catch (err) {
+    console.warn("⚠️ yt-search failed, trying InnerTube fallback:", err.message);
+  }
+
+  try {
+    const fallbackResult = await searchYouTubeViaInnerTube(query, 5000);
+    if (fallbackResult) {
+      setCache(cacheKey, fallbackResult);
+      return fallbackResult;
+    }
     return null;
   } catch (err) {
-    console.error("YouTube search error:", err);
+    console.error("YouTube search error (InnerTube fallback):", err.message);
     logError('searchYouTube', err, { query });
     return null;
   }
