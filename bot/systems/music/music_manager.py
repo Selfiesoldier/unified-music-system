@@ -61,12 +61,12 @@ class MusicManager:
             session = await self._ensure_session()
             url = f"{self.api_server}{endpoint}"
             if method == "POST":
-                async with session.post(url, json=data) as response:
+                async with session.post(url, json=data, timeout=aiohttp.ClientTimeout(total=15)) as response:
                     if response.status == 401:
                         print("❌ HTTP 401 Unauthorized: Bot password does not match server ADMIN_PASSWORD.")
                     return await response.json()
             else:
-                async with session.get(url) as response:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=12)) as response:
                     if response.status == 401:
                         print("❌ HTTP 401 Unauthorized: Bot password does not match server ADMIN_PASSWORD.")
                     return await response.json()
