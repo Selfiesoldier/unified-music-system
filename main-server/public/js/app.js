@@ -88,7 +88,7 @@ async function fetchApi(endpoint, method = 'POST', body = null) {
 
 UI.loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
-  const pwd = document.getElementById('password').value.trim() || 'changeme';
+  const pwd = document.getElementById('password').value.trim();
   try {
     localStorage.setItem('admin_token', pwd);
     const data = await fetchApi('/api/login', 'POST', { password: pwd });
@@ -102,19 +102,18 @@ UI.loginForm.addEventListener('submit', async (e) => {
   }
 });
 
-// Check if already authenticated via a quick API ping (supports localStorage token, defaults to 'changeme')
-const existingToken = localStorage.getItem('admin_token') || 'changeme';
-const pingHeaders = { 'Authorization': `Bearer ${existingToken}` };
+// Check if already authenticated via a quick API ping (supports localStorage token)
+const existingToken = localStorage.getItem('admin_token') || '';
+const pingHeaders = existingToken ? { 'Authorization': `Bearer ${existingToken}` } : {};
 fetch('/api/config', { headers: pingHeaders, credentials: 'include' })
   .then(res => {
     if (res.ok) {
-      localStorage.setItem('admin_token', existingToken);
       UI.loginOverlay.classList.remove('active');
       UI.dashboard.classList.remove('hidden');
       startSSE();
       loadDashboardData();
     }
-  }).catch(() => {});
+  });
 
 function startSSE() {
   if (eventSource) return;
@@ -191,21 +190,17 @@ async function loadDashboardData() {
     const adminList = document.getElementById('list-admins');
     const vipList = document.getElementById('list-vips');
     
-    if (adminList) {
-      adminList.innerHTML = `<li style="color:var(--primary)">${data.owner || 'None'} (Owner)</li>`;
-      data.admins?.forEach(a => {
-        adminList.innerHTML += `<li>${a} <button class="danger" style="padding: 2px 5px; font-size: 10px; margin-left: 10px;" onclick="removeAccess('admin', '${a}')">Revoke</button></li>`;
-      });
-      if(!data.admins?.length && !data.owner) adminList.innerHTML = `<li>No admins set</li>`;
-    }
+    adminList.innerHTML = `<li style="color:var(--primary)">${data.owner || 'None'} (Owner)</li>`;
+    data.admins?.forEach(a => {
+      adminList.innerHTML += `<li>${a} <button class="danger" style="padding: 2px 5px; font-size: 10px; margin-left: 10px;" onclick="removeAccess('admin', '${a}')">Revoke</button></li>`;
+    });
+    if(!data.admins?.length && !data.owner) adminList.innerHTML = `<li>No admins set</li>`;
     
-    if (vipList) {
-      vipList.innerHTML = '';
-      data.vips?.forEach(v => {
-        vipList.innerHTML += `<li>${v} <button class="danger" style="padding: 2px 5px; font-size: 10px; margin-left: 10px;" onclick="removeAccess('vip', '${v}')">Revoke</button></li>`;
-      });
-      if(!data.vips?.length) vipList.innerHTML = `<li>No VIPs set</li>`;
-    }
+    vipList.innerHTML = '';
+    data.vips?.forEach(v => {
+      vipList.innerHTML += `<li>${v} <button class="danger" style="padding: 2px 5px; font-size: 10px; margin-left: 10px;" onclick="removeAccess('vip', '${v}')">Revoke</button></li>`;
+    });
+    if(!data.vips?.length) vipList.innerHTML = `<li>No VIPs set</li>`;
   }).catch(()=>{});
 
   // Load Economy
@@ -705,6 +700,18 @@ document.getElementById('btn-save-mode')?.addEventListener('click', async () => 
   } catch(e) {}
 });
 
+// Global Free Music toggle
+document.getElementById('free-music-toggle')?.addEventListener('change', async (e) => {
+  const enabled = e.target.checked;
+  const command = enabled ? '/freemusic 60' : '/stopfreemusic';
+  try {
+    await fetchApi('/api/terminal', 'POST', { command });
+    toast(enabled ? 'Global Free Music enabled (60 min)' : 'Global Free Music disabled');
+  } catch (err) {
+    e.target.checked = !enabled;
+  }
+});
+
 // ----------------------
 // MUSIC CONTROLS
 // ----------------------
@@ -788,6 +795,15 @@ function updateProgressBar() {
   }
 }
 
+function escapeHtml(str) {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 function updateMusicDashboard(state) {
   if (isRestarting) return;
   
@@ -830,18 +846,20 @@ function updateMusicDashboard(state) {
 
   // Queue
   const qLen = state.queue ? state.queue.length : 0;
-  UI.queueCount.textContent = `${qLen} songs`;
-  document.getElementById('queue-count').textContent = qLen;
+  if (UI.queueCount) {
+    UI.queueCount.textContent = String(qLen);
+  }
   
-  if (state.queue) {
+  if (state.queue && UI.queueList) {
     UI.queueList.innerHTML = state.queue.map((item, idx) => `
       <div class="q-item">
         <div class="q-pos">${idx + 1}</div>
-        <img src="${item.metadata?.thumbnail || ''}" class="q-thumb" alt="thumb">
-        <div class="q-info">
-          <div class="q-title">${item.metadata?.title || 'Unknown Track'}</div>
-          <div class="q-artist">${item.metadata?.artist || 'Unknown'}</div>
+        <img src="${escapeHtml(item.metadata?.thumbnail || '')}" class="q-thumb" alt="thumb">
+        <div class="q-info" style="flex: 1; min-width: 0;">
+          <div class="q-title">${escapeHtml(item.metadata?.title || 'Unknown Track')}</div>
+          <div class="q-artist">${escapeHtml(item.metadata?.artist || 'Unknown')}</div>
         </div>
+        <button type="button" class="danger q-remove-btn" style="padding: 4px 10px; font-size: 12px; margin-left: auto; flex-shrink: 0;" onclick="removeFromQueue(${idx})" title="Remove from queue">✕</button>
       </div>
     `).join('');
   }
@@ -860,176 +878,4 @@ function updateMusicDashboard(state) {
       UI.healthBadge.className = "badge unhealthy";
     }
   }
-}
-
-// ==========================================
-// 📁 DIRECT MP3 FILE UPLOAD & DROPZONE
-// ==========================================
-let selectedMp3File = null;
-const mp3FileInput = document.getElementById('mp3-file-input');
-const uploadMp3Card = document.getElementById('upload-mp3-card');
-const uploadIdleState = document.getElementById('upload-idle-state');
-const uploadReadyState = document.getElementById('upload-ready-state');
-const btnChooseFile = document.getElementById('btn-choose-file');
-const btnUploadDirect = document.getElementById('btn-upload-direct');
-const selectedFileName = document.getElementById('selected-file-name');
-const selectedFileSize = document.getElementById('selected-file-size');
-const btnUploadNext = document.getElementById('btn-upload-next');
-const btnUploadLast = document.getElementById('btn-upload-last');
-const btnUploadCancel = document.getElementById('btn-upload-cancel');
-
-function openMp3Picker() {
-  if (mp3FileInput) mp3FileInput.click();
-}
-
-if (btnUploadDirect) {
-  btnUploadDirect.onclick = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openMp3Picker();
-  };
-}
-
-if (btnChooseFile) {
-  btnChooseFile.onclick = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    openMp3Picker();
-  };
-}
-
-if (uploadIdleState) {
-  uploadIdleState.onclick = (e) => {
-    if (e.target.closest('#btn-choose-file')) return;
-    openMp3Picker();
-  };
-}
-
-if (uploadMp3Card) {
-  uploadMp3Card.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    uploadMp3Card.classList.add('dragover');
-  });
-
-  uploadMp3Card.addEventListener('dragleave', () => {
-    uploadMp3Card.classList.remove('dragover');
-  });
-
-  uploadMp3Card.addEventListener('drop', (e) => {
-    e.preventDefault();
-    uploadMp3Card.classList.remove('dragover');
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleSelectedMp3(e.dataTransfer.files[0]);
-    }
-  });
-}
-
-if (mp3FileInput) {
-  mp3FileInput.addEventListener('change', (e) => {
-    if (e.target.files && e.target.files.length > 0) {
-      handleSelectedMp3(e.target.files[0]);
-    }
-  });
-}
-
-function handleSelectedMp3(file) {
-  if (!file) return;
-  if (!file.name.toLowerCase().endsWith('.mp3') && !file.type.includes('mpeg') && !file.type.includes('mp3')) {
-    toast('⚠️ Please select a valid .mp3 file', true);
-    return;
-  }
-  selectedMp3File = file;
-  if (selectedFileName) selectedFileName.textContent = file.name;
-  if (selectedFileSize) selectedFileSize.textContent = `(${(file.size / 1024 / 1024).toFixed(2)} MB)`;
-
-  if (uploadIdleState) uploadIdleState.style.display = 'none';
-  if (uploadReadyState) uploadReadyState.style.display = 'flex';
-}
-
-function resetMp3Upload() {
-  selectedMp3File = null;
-  if (mp3FileInput) mp3FileInput.value = '';
-  if (uploadIdleState) uploadIdleState.style.display = 'flex';
-  if (uploadReadyState) uploadReadyState.style.display = 'none';
-}
-
-if (btnUploadCancel) {
-  btnUploadCancel.onclick = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    resetMp3Upload();
-  };
-}
-
-if (btnUploadNext) {
-  btnUploadNext.onclick = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (selectedMp3File) uploadMp3Binary(selectedMp3File, 'next');
-  };
-}
-
-if (btnUploadLast) {
-  btnUploadLast.onclick = (e) => {
-    e.preventDefault();
-    e.stopPropagation();
-    if (selectedMp3File) uploadMp3Binary(selectedMp3File, 'last');
-  };
-}
-
-function uploadMp3Binary(file, position) {
-  const cleanTitle = file.name.replace(/\.[^/.]+$/, '').trim();
-  const progressBar = document.getElementById('upload-progress-bar');
-  const progressFill = document.getElementById('upload-progress-fill');
-  const progressText = document.getElementById('upload-progress-text');
-
-  if (progressBar) progressBar.classList.remove('hidden');
-  if (progressFill) progressFill.style.width = '0%';
-  if (progressText) progressText.textContent = `Uploading ${file.name}... 0%`;
-
-  const token = localStorage.getItem('admin_token') || '';
-  const xhr = new XMLHttpRequest();
-  const uploadUrl = `/api/upload-mp3?position=${position}&title=${encodeURIComponent(cleanTitle)}`;
-  
-  xhr.open('POST', uploadUrl, true);
-  xhr.setRequestHeader('Content-Type', 'audio/mpeg');
-  if (token) {
-    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-  }
-
-  xhr.upload.onprogress = (e) => {
-    if (e.lengthComputable) {
-      const pct = Math.round((e.loaded / e.total) * 100);
-      if (progressFill) progressFill.style.width = `${pct}%`;
-      if (progressText) progressText.textContent = `Uploading ${file.name}... ${pct}%`;
-    }
-  };
-
-  xhr.onload = () => {
-    if (progressBar) progressBar.classList.add('hidden');
-    if (xhr.status >= 200 && xhr.status < 300) {
-      try {
-        const resp = JSON.parse(xhr.responseText);
-        const actionLabel = position === 'next' ? 'Plays next when song ends (0s gap)' : 'Queued at end';
-        toast(`✅ "${resp.title || cleanTitle}" uploaded! ${actionLabel}`);
-      } catch (_) {
-        toast(`✅ "${cleanTitle}" uploaded!`);
-      }
-      resetMp3Upload();
-    } else {
-      let errMsg = 'Upload failed';
-      try {
-        const errJson = JSON.parse(xhr.responseText);
-        errMsg = errJson.error || errMsg;
-      } catch (_) {}
-      toast(`❌ ${errMsg}`, true);
-    }
-  };
-
-  xhr.onerror = () => {
-    if (progressBar) progressBar.classList.add('hidden');
-    toast('❌ Network error uploading MP3', true);
-  };
-
-  xhr.send(file);
 }

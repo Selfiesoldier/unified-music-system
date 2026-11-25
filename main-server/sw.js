@@ -1,5 +1,5 @@
 
-import { spawn } from 'child_process';
+import { spawn, execSync } from 'child_process';
 import { writeFileSync, appendFileSync, existsSync, mkdirSync, statSync, unlinkSync, renameSync, readdirSync } from 'fs';
 import { join } from 'path';
 
@@ -122,17 +122,11 @@ function isCrashLooping() {
 }
 
 function killProcess(proc, signal = 'SIGTERM') {
-  if (!proc) return;
+  if (!proc || !proc.pid) return;
   
   try {
     if (isWindows) {
-      if (signal === 'SIGKILL') {
-        // Force kill on Windows
-        spawn('taskkill', ['/pid', proc.pid, '/f', '/t'], { stdio: 'ignore' });
-      } else {
-        // Graceful kill attempt on Windows (still uses taskkill but without /f)
-        spawn('taskkill', ['/pid', proc.pid, '/t'], { stdio: 'ignore' });
-      }
+      spawn('taskkill', ['/pid', String(proc.pid), '/f', '/t'], { stdio: 'ignore' });
     } else {
       proc.kill(signal);
     }
@@ -155,11 +149,9 @@ function startServer() {
   
   serverStartTime = Date.now();
   
-  // Use shell option for better cross-platform compatibility
-  currentProcess = spawn('node', ['server.js'], {
+  currentProcess = spawn('node', ['--max-old-space-size=128', '--expose-gc', 'server.js'], {
     stdio: 'inherit',
-    env: process.env,
-    shell: isWindows
+    env: process.env
   });
 
   currentProcess.on('exit', (code, signal) => {
@@ -255,14 +247,29 @@ function gracefulShutdown(signal) {
   writeSystemLog(`Shutdown requested (${signal})`);
   shutdownRequested = true;
   
-  if (currentProcess) {
-    killProcess(currentProcess, 'SIGTERM');
-    setTimeout(() => {
-      if (currentProcess && !currentProcess.killed) {
-        killProcess(currentProcess, 'SIGKILL');
+  if (currentProcess && currentProcess.pid) {
+    const pid = currentProcess.pid;
+    if (isWindows) {
+      const forceKillTree = () => {
+        try {
+          execSync(`taskkill /pid ${pid} /f /t`, { stdio: 'ignore' });
+        } catch (_) {}
+        process.exit(0);
+      };
+      if (signal === 'SIGINT') {
+        setTimeout(forceKillTree, 500);
+      } else {
+        forceKillTree();
       }
-      process.exit(0);
-    }, 5000);
+    } else {
+      killProcess(currentProcess, 'SIGTERM');
+      setTimeout(() => {
+        if (currentProcess && currentProcess.exitCode === null) {
+          killProcess(currentProcess, 'SIGKILL');
+        }
+        process.exit(0);
+      }, 5000);
+    }
   } else {
     process.exit(0);
   }
