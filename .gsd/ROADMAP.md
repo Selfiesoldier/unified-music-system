@@ -1,7 +1,7 @@
 # Project Roadmap: Highrise Music Fleet & Engine
 
-> **Current Milestone:** Milestone 2: Strict 100% FFmpeg-Free Audio Server Fleet (Complete ✅)
-> **Current Phase:** All phases complete
+> **Current Milestone:** Milestone 3: Main Controller Hardening & Optimization (Phase 9 Complete ✅)
+> **Current Phase:** Phase 9 — Complete
 > **Status:** complete
 
 ---
@@ -67,3 +67,15 @@
 - [x] Plan 8.1: Update `deploy_audio_servers.py` and `deploy_main.py` deploy manifests
 - [x] Plan 8.2: Deploy to Audio Server 1 (Room 1), Audio Server 2 (Room 2), and Central Controller
 - [x] Plan 8.3: Verify live process tree on containers (confirm 0 FFmpeg instances, 0 child processes under continuous playback)
+
+---
+
+## Milestone 3: Main Controller Hardening & Optimization
+
+### Phase 9: Main Controller Security, Reliability & Performance Hardening
+- **Status:** Complete ✅
+- **Goal:** Eliminate critical unauthenticated endpoints, XSS, and `.env` injection in `main-server/`, fix `playNext`/queue/TTS/SSE bugs, add graceful shutdown & timeouts, and optimize memory/async I/O under the 128 MB heap cap.
+- [x] Plan 9.2: Playback, Queue, TTS & SSE Bug Fixes (`server.js`) [Wave 1]
+- [x] Plan 9.3: Reliability, Lifecycle, Watchdog & UI Fixes (`server.js`, `sw.js`, `package.json`, `public/`) [Wave 1]
+- [x] Plan 9.1: Security & Access Lockdown (`server.js`, `public/js/app.js`, `residential/manager.js`, `bot/home_bridge_manager.js`) [Wave 2]
+- [x] Plan 9.4: Memory Guard, Async I/O & Dead Code Cleanup (`server.js`, `package.json`) [Wave 2]

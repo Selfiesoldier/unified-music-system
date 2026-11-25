@@ -1,7 +1,8 @@
 # GSD State Tracking
 
-**Milestone:** Milestone 2: Strict 100% FFmpeg-Free Audio Server Fleet  
-**Status:** complete ✅  
+**Milestone:** Milestone 3: Main Controller Hardening & Optimization  
+**Phase:** Phase 9 — Main Controller Security, Reliability & Performance Hardening  
+**Status:** Complete ✅
 
 ## Architectural Principle Verified & Enforced
 1. **Audio Server 1 & 2 (`00f50ae1`, `4c1b3907`):** 100% FFmpeg-free. Zero `child_process` spawns, zero exec calls. Pure JS 96k CBR byte stream relay only.
