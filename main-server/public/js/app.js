@@ -52,9 +52,7 @@ function toast(message, isError = false) {
 }
 
 async function fetchApi(endpoint, method = 'POST', body = null) {
-  const token = localStorage.getItem('admin_token') || '';
   const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['Authorization'] = `Bearer ${token}`;
 
   try {
     const res = await fetch(endpoint, {
@@ -90,15 +88,13 @@ UI.loginForm.addEventListener('submit', async (e) => {
   e.preventDefault();
   const pwd = document.getElementById('password').value.trim();
   try {
-    localStorage.setItem('admin_token', pwd);
     const data = await fetchApi('/api/login', 'POST', { password: pwd });
-    if (data.token) localStorage.setItem('admin_token', data.token);
     UI.loginOverlay.classList.remove('active');
     UI.dashboard.classList.remove('hidden');
     startSSE();
     loadDashboardData();
   } catch (err) {
-    localStorage.removeItem('admin_token');
+    // login failed — fetchApi shows toast
   }
 });
 
@@ -117,9 +113,7 @@ fetch('/api/config', { headers: pingHeaders, credentials: 'include' })
 
 function startSSE() {
   if (eventSource) return;
-  const token = localStorage.getItem('admin_token') || '';
-  const sseUrl = token ? `/events?token=${encodeURIComponent(token)}` : '/events';
-  eventSource = new EventSource(sseUrl);
+  eventSource = new EventSource('/events', { withCredentials: true });
   
   eventSource.onmessage = (e) => {
     if (e.data === ':heartbeat') return; // ignore keepalive
@@ -190,15 +184,15 @@ async function loadDashboardData() {
     const adminList = document.getElementById('list-admins');
     const vipList = document.getElementById('list-vips');
     
-    adminList.innerHTML = `<li style="color:var(--primary)">${data.owner || 'None'} (Owner)</li>`;
+    adminList.innerHTML = `<li style="color:var(--primary)">${escapeHtml(data.owner || 'None')} (Owner)</li>`;
     data.admins?.forEach(a => {
-      adminList.innerHTML += `<li>${a} <button class="danger" style="padding: 2px 5px; font-size: 10px; margin-left: 10px;" onclick="removeAccess('admin', '${a}')">Revoke</button></li>`;
+      adminList.innerHTML += `<li>${escapeHtml(a)} <button class="danger" style="padding: 2px 5px; font-size: 10px; margin-left: 10px;" onclick="removeAccess('admin', '${escapeHtml(a)}')">Revoke</button></li>`;
     });
     if(!data.admins?.length && !data.owner) adminList.innerHTML = `<li>No admins set</li>`;
     
     vipList.innerHTML = '';
     data.vips?.forEach(v => {
-      vipList.innerHTML += `<li>${v} <button class="danger" style="padding: 2px 5px; font-size: 10px; margin-left: 10px;" onclick="removeAccess('vip', '${v}')">Revoke</button></li>`;
+      vipList.innerHTML += `<li>${escapeHtml(v)} <button class="danger" style="padding: 2px 5px; font-size: 10px; margin-left: 10px;" onclick="removeAccess('vip', '${escapeHtml(v)}')">Revoke</button></li>`;
     });
     if(!data.vips?.length) vipList.innerHTML = `<li>No VIPs set</li>`;
   }).catch(()=>{});
@@ -238,11 +232,11 @@ async function loadHistory() {
       const lastSeen = new Date(user.last_seen).toLocaleString();
       return `
         <tr style="border-bottom: 1px solid rgba(255,255,255,0.05);">
-          <td style="padding: 10px; font-weight: bold; color: var(--primary);">${user.username}</td>
-          <td style="padding: 10px; font-size: 12px; color: #aaa;">${firstSeen}</td>
-          <td style="padding: 10px; font-size: 12px; color: #aaa;">${lastSeen}</td>
-          <td style="padding: 10px;">${user.joins || 1}</td>
-          <td style="padding: 10px;">${user.messages_sent || 0}</td>
+          <td style="padding: 10px; font-weight: bold; color: var(--primary);">${escapeHtml(user.username)}</td>
+          <td style="padding: 10px; font-size: 12px; color: #aaa;">${escapeHtml(firstSeen)}</td>
+          <td style="padding: 10px; font-size: 12px; color: #aaa;">${escapeHtml(lastSeen)}</td>
+          <td style="padding: 10px;">${escapeHtml(String(user.joins || 1))}</td>
+          <td style="padding: 10px;">${escapeHtml(String(user.messages_sent || 0))}</td>
         </tr>
       `;
     }).join('');
@@ -261,7 +255,7 @@ function appendLiveChat(username, message) {
   div.style.borderRadius = "4px";
   
   const time = new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-  div.innerHTML = `<span style="color:#888; font-size:10px;">[${time}]</span> <strong style="color:var(--primary);">${username}:</strong> <span style="word-break: break-word;">${message}</span>`;
+  div.innerHTML = `<span style="color:#888; font-size:10px;">[${escapeHtml(time)}]</span> <strong style="color:var(--primary);">${escapeHtml(username)}:</strong> <span style="word-break: break-word;">${escapeHtml(message)}</span>`;
   
   container.appendChild(div);
   
@@ -294,10 +288,10 @@ async function loadAnalytics() {
       const color = t.status === 'Running' ? '#0f0' : '#f00';
       btmList.innerHTML += `
         <li style="display: flex; justify-content: space-between; align-items: center;">
-          <span>${t.name}</span>
+          <span>${escapeHtml(t.name)}</span>
           <div>
-            <span style="color: #aaa; font-size: 11px; margin-right: 10px;">Crashes: ${t.crashes}</span>
-            <span style="color: ${color};">${t.status}</span>
+            <span style="color: #aaa; font-size: 11px; margin-right: 10px;">Crashes: ${escapeHtml(String(t.crashes))}</span>
+            <span style="color: ${color};">${escapeHtml(t.status)}</span>
           </div>
         </li>
       `;
@@ -319,11 +313,11 @@ async function loadPlaylists() {
     grid.innerHTML = data.playlists.map(p => `
       <div class="glass-card" style="display: flex; flex-direction: column; justify-content: space-between;">
         <div>
-          <h3 style="margin: 0; color: var(--primary);">${p.name}</h3>
-          <p style="font-size: 12px; color: #aaa; margin: 5px 0;">Owner: ${p.owner}</p>
-          <p style="font-size: 14px; margin-bottom: 15px;">${p.songCount} Songs</p>
+          <h3 style="margin: 0; color: var(--primary);">${escapeHtml(p.name)}</h3>
+          <p style="font-size: 12px; color: #aaa; margin: 5px 0;">Owner: ${escapeHtml(p.owner)}</p>
+          <p style="font-size: 14px; margin-bottom: 15px;">${escapeHtml(String(p.songCount))} Songs</p>
         </div>
-        <button class="primary" onclick="playPlaylist('${p.name}')" style="width: 100%;">Play Playlist</button>
+        <button class="primary" onclick="playPlaylist('${escapeHtml(p.name)}')" style="width: 100%;">Play Playlist</button>
       </div>
     `).join('');
   } catch(e) {
@@ -348,7 +342,7 @@ async function loadOutfits() {
     }
     
     select.innerHTML = '<option value="">-- Choose an outfit --</option>' + 
-      data.presets.map(p => `<option value="${p}">${p}</option>`).join('');
+      data.presets.map(p => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
   } catch(e) {
     select.innerHTML = '<option value="">Error loading presets</option>';
   }
@@ -380,9 +374,9 @@ async function loadEconomyData() {
     
     entries.forEach(([user, points]) => {
       list.innerHTML += `
-        <div class="roster-item" style="cursor: pointer;" onclick="document.getElementById('economy-target').value = '${user}'">
-          <strong>${user}</strong>
-          <span class="id">${points} pts</span>
+        <div class="roster-item" style="cursor: pointer;" onclick="document.getElementById('economy-target').value = '${escapeHtml(user)}'">
+          <strong>${escapeHtml(user)}</strong>
+          <span class="id">${escapeHtml(String(points))} pts</span>
         </div>
       `;
     });
@@ -411,8 +405,8 @@ async function loadRoster() {
     }
     list.innerHTML = data.users.map(u => `
       <div class="roster-item">
-        <strong>${u.username}</strong>
-        <span class="id">${u.id}</span>
+        <strong>${escapeHtml(u.username)}</strong>
+        <span class="id">${escapeHtml(u.id)}</span>
       </div>
     `).join('');
   } catch (e) {
@@ -431,7 +425,7 @@ async function loadLocations() {
     }
     
     container.innerHTML = data.locations.map(loc => `
-      <button class="secondary" onclick="teleportToLocation('${loc.name}')">${loc.name}</button>
+      <button class="secondary" onclick="teleportToLocation('${escapeHtml(loc.name)}')">${escapeHtml(loc.name)}</button>
     `).join('');
   } catch(e) {
     container.innerHTML = '<span style="color: var(--danger);">Failed to load locations</span>';
@@ -492,9 +486,9 @@ document.getElementById('btn-search-shop')?.addEventListener('click', async () =
     
     grid.innerHTML = data.results.map(item => `
       <div class="glass-card" style="display: flex; flex-direction: column; align-items: center; text-align: center;">
-        <h4 style="margin: 0; color: var(--primary); font-size: 14px;">${item.item_name}</h4>
-        <p style="font-size: 12px; color: #aaa; margin: 5px 0;">ID: ${item.item_id}</p>
-        <button class="primary" onclick="buyItem('${item.item_id}')" style="margin-top: 10px; width: 100%;">Buy Item</button>
+        <h4 style="margin: 0; color: var(--primary); font-size: 14px;">${escapeHtml(item.item_name)}</h4>
+        <p style="font-size: 12px; color: #aaa; margin: 5px 0;">ID: ${escapeHtml(item.item_id)}</p>
+        <button class="primary" onclick="buyItem('${escapeHtml(item.item_id)}')" style="margin-top: 10px; width: 100%;">Buy Item</button>
       </div>
     `).join('');
   } catch(e) {
@@ -641,7 +635,7 @@ document.getElementById('btn-terminal-send').onclick = async () => {
   if(!command) return;
   
   const output = document.getElementById('terminal-output');
-  output.innerHTML += `\n<span style="color: #fff">> ${command}</span>`;
+  output.innerHTML += `\n<span style="color: #fff">> ${escapeHtml(command)}</span>`;
   input.value = '';
   
   try {
@@ -649,7 +643,7 @@ document.getElementById('btn-terminal-send').onclick = async () => {
     output.innerHTML += `\n<span style="color: #aaa">[Command dispatched to Bot Process. Bot responses will appear in-game]</span>`;
     output.scrollTop = output.scrollHeight;
   } catch(e) {
-    output.innerHTML += `\n<span style="color: var(--danger)">[Error: ${e.message}]</span>`;
+    output.innerHTML += `\n<span style="color: var(--danger)">[Error: ${escapeHtml(e.message)}]</span>`;
   }
 };
 document.getElementById('terminal-input').addEventListener('keypress', function (e) {

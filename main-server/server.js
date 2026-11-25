@@ -112,11 +112,18 @@ app.use(express.static(path.join(__dirname, "public"), { maxAge: "1d", etag: tru
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "changeme";
 const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
 
+if (ADMIN_PASSWORD === "changeme") {
+  console.warn("⚠️ [Security] ADMIN_PASSWORD is set to default 'changeme'! Configure a strong ADMIN_PASSWORD in .env.");
+}
+if (!process.env.IPC_SECRET) {
+  console.warn("⚠️ [Security] IPC_SECRET is unset! Internal bot IPC requests will fail authentication.");
+}
+
 const sessionMiddleware = session({
   secret: SESSION_SECRET,
   resave: false,
   saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: "lax", maxAge: 86400000 } // 24h
+  cookie: { httpOnly: true, sameSite: "lax", secure: false, maxAge: 86400000 } // 24h
 });
 
 // Bypass session allocation on high-frequency streaming and health routes to save CPU & RAM
@@ -143,10 +150,10 @@ const apiLimiter = rateLimit({
 });
 
 function timingSafeCompare(a, b) {
-  const bufA = Buffer.from(a);
-  const bufB = Buffer.from(b);
-  if (bufA.length !== bufB.length) return false;
-  return crypto.timingSafeEqual(bufA, bufB);
+  if (typeof a !== "string" || typeof b !== "string") return false;
+  const hashA = crypto.createHash("sha256").update(a, "utf8").digest();
+  const hashB = crypto.createHash("sha256").update(b, "utf8").digest();
+  return crypto.timingSafeEqual(hashA, hashB);
 }
 
 const requireAuth = (req, res, next) => {
@@ -155,14 +162,15 @@ const requireAuth = (req, res, next) => {
   }
   
   const authHeader = req.headers.authorization;
-  if (authHeader && authHeader.startsWith("Bearer ")) {
+  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
     const token = authHeader.substring(7).trim();
     if (timingSafeCompare(token, ADMIN_PASSWORD)) {
       return next();
     }
   }
 
-  const queryToken = (req.query.token || req.query.auth || '').trim();
+  const rawQueryToken = req.query.token || req.query.auth || '';
+  const queryToken = typeof rawQueryToken === "string" ? rawQueryToken.trim() : '';
   if (queryToken && timingSafeCompare(queryToken, ADMIN_PASSWORD)) {
     return next();
   }
@@ -179,19 +187,17 @@ app.use((req, res, next) => {
   return apiLimiter(req, res, next);
 });
 
-// GLOBAL AUTH: Allow direct unauthenticated access for Highrise bot & room listeners
+// GLOBAL AUTH: Allow public listener/login/bridge endpoints; require auth for controls & admin APIs
 app.use((req, res, next) => {
   const p2 = req.path.toLowerCase();
   const publicPaths = [
-    '/', '/events', '/current', '/queue', '/stats', '/health', '/ping',
-    '/stream', '/play', '/next', '/stop', '/search', '/insert',
-    '/volume', '/quality', '/announcements', '/api/login', '/api/bot-command',
-    '/api/register-bridge', '/api/bridge-status'
+    '/', '/current', '/queue', '/stats', '/health', '/ping',
+    '/stream', '/search', '/api/login', '/api/register-bridge'
   ];
   if (publicPaths.includes(p2) || p2.startsWith('/stream') || p2.startsWith('/assets') || p2.startsWith('/public')) {
     return next();
   }
-  // Enforce auth strictly for administrative operations (e.g. /api/restart, /api/terminal, /api/config)
+  // Enforce auth strictly for administrative and playback mutation routes
   return requireAuth(req, res, next);
 });
 
@@ -427,6 +433,38 @@ let residentialBridgeUrl = bridgePoolManager.getPrimaryBridge()?.url || null;
 app.post("/api/register-bridge", (req, res) => {
   const { url, name } = req.body || {};
   if (!url) return res.status(400).json({ error: "Missing url parameter" });
+
+  // Validate URL — only allow http: (localhost/LAN) or https: (Cloudflare tunnels)
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return res.status(400).json({ error: "Invalid URL" });
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
+    return res.status(400).json({ error: "URL must use http or https" });
+  }
+  if (parsed.protocol === "http:") {
+    const host = parsed.hostname.toLowerCase();
+    const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1" || /^192\.168\./.test(host) || /^10\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    if (!isLocal) {
+      return res.status(400).json({ error: "Plain-http URLs are only allowed for localhost and LAN addresses" });
+    }
+  }
+
+  // If BRIDGE_SECRET is set, enforce it; otherwise log a one-time warning
+  const BRIDGE_SECRET = process.env.BRIDGE_SECRET;
+  if (BRIDGE_SECRET) {
+    const authHeader = req.headers.authorization;
+    const provided = typeof authHeader === "string" && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : "";
+    if (!timingSafeCompare(provided, BRIDGE_SECRET)) {
+      return res.status(401).json({ error: "Invalid or missing BRIDGE_SECRET" });
+    }
+  } else if (!app._bridgeSecretWarned) {
+    app._bridgeSecretWarned = true;
+    console.warn("⚠️ [Security] BRIDGE_SECRET is unset — /api/register-bridge is unauthenticated. Set BRIDGE_SECRET in .env to lock it down.");
+  }
+
   const bridge = bridgePoolManager.register(url, name);
   residentialBridgeUrl = bridgePoolManager.getPrimaryBridge()?.url || bridge.url;
   res.json({
@@ -545,10 +583,10 @@ app.get("/debug-ytdlp", async (req, res) => {
 });
 
 app.post("/api/login", loginLimiter, (req, res) => {
-  const { password } = req.body;
-  if (password && timingSafeCompare(password, ADMIN_PASSWORD)) {
+  const { password } = req.body || {};
+  if (typeof password === "string" && password && timingSafeCompare(password, ADMIN_PASSWORD)) {
     req.session.authenticated = true;
-    res.send({ status: "ok", token: ADMIN_PASSWORD });
+    res.send({ status: "ok", authenticated: true });
   } else {
     res.status(401).send({ error: "Invalid password" });
   }
@@ -3820,13 +3858,22 @@ app.get("/", (req, res) => {
   `);
 });
 
+const ALLOWED_IPC_COMMANDS = new Set([
+  'kick', 'teleport', 'say', 'restart', 'roster', 'terminal', 'access',
+  'economy', 'mode', 'stats', 'playlists', 'outfits', 'locations',
+  'shop', 'history', 'broadcast'
+]);
+
 app.post("/api/bot-command", async (req, res) => {
   try {
-    const { command, ...data } = req.body;
+    const { command, ...data } = req.body || {};
+    if (typeof command !== "string" || !ALLOWED_IPC_COMMANDS.has(command)) {
+      return res.status(400).send({ error: "Invalid or disallowed command" });
+    }
     
     // Server-side validation for moderation commands
     if (command === "kick" || command === "teleport") {
-      if (!data.userId) {
+      if (!data.userId || typeof data.userId !== "string") {
         return res.status(400).send({ error: "userId is required for this command" });
       }
       
@@ -3882,15 +3929,24 @@ app.get("/api/config", (req, res) => {
 
 app.post("/api/config", (req, res) => {
   try {
-    const { ROOM_ID, API_TOKEN } = req.body;
-    let envContent = fs.readFileSync('.env', 'utf8');
+    const { ROOM_ID, API_TOKEN } = req.body || {};
+    const hasInvalidEnvChars = (val) => typeof val !== "string" || /[\r\n=\0]/.test(val);
+    if (ROOM_ID !== undefined && ROOM_ID !== null && ROOM_ID !== "" && hasInvalidEnvChars(ROOM_ID)) {
+      return res.status(400).send({ error: "Invalid ROOM_ID: newline, carriage return, and '=' characters are not allowed." });
+    }
+    if (API_TOKEN !== undefined && API_TOKEN !== null && API_TOKEN !== "" && hasInvalidEnvChars(API_TOKEN)) {
+      return res.status(400).send({ error: "Invalid API_TOKEN: newline, carriage return, and '=' characters are not allowed." });
+    }
+
+    const envPath = fs.existsSync('.env') ? '.env' : path.join(__dirname, '.env');
+    let envContent = fs.readFileSync(envPath, 'utf8');
     if (ROOM_ID) {
-      envContent = envContent.replace(/ROOM_ID=.*/g, `ROOM_ID=${ROOM_ID}`);
+      envContent = envContent.replace(/ROOM_ID=.*/g, () => `ROOM_ID=${ROOM_ID}`);
     }
     if (API_TOKEN) {
-      envContent = envContent.replace(/API_TOKEN=.*/g, `API_TOKEN=${API_TOKEN}`);
+      envContent = envContent.replace(/API_TOKEN=.*/g, () => `API_TOKEN=${API_TOKEN}`);
     }
-    fs.writeFileSync('.env', envContent);
+    fs.writeFileSync(envPath, envContent);
     res.send({ status: "success", message: "Config saved. Restart required." });
   } catch (e) {
     res.status(500).send({ error: e.message });
