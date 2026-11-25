@@ -1,1620 +1,799 @@
-import express from "express";
-import { spawn, execSync, exec } from "child_process";
-import { PassThrough, Readable } from "stream";
-import yts from "yt-search";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-import fetch from "node-fetch";
-import googleTTS from "google-tts-api";
-import ffmpegStatic from "ffmpeg-static";
-import session from "express-session";
-import rateLimit from "express-rate-limit";
-import crypto from "crypto";
-import dotenv from "dotenv";
-// live_logs disabled for CPU optimization
+﻿import express from 'express';
+import session from 'express-session';
+import rateLimit from 'express-rate-limit';
+import crypto from 'crypto';
+import dotenv from 'dotenv';
+import path from 'path';
+import fs from 'fs';
+import { fileURLToPath } from 'url';
+import fetch from 'node-fetch';
+import * as googleTTS from 'google-tts-api';
+import yts from 'yt-search';
+import { is96kCbrMp3Buffer, validateMp3FileHeader } from './src/mp3Validator.js';
+
+// ==========================================
+// 🔎 IN-MEMORY YTS SEARCH CACHE (10 min TTL)
+// Prevents repeated heavy YouTube HTML scrapes
+// for duplicate-check, duration-check & play calls.
+// ==========================================
+const ytsCache = new Map(); // key -> { result, expiresAt }
+const YTS_CACHE_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+function parseTimestampToSeconds(ts) {
+  if (!ts || typeof ts !== 'string') return 0;
+  const parts = ts.trim().split(':').map(Number);
+  if (parts.some(Number.isNaN)) return 0;
+  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
+  if (parts.length === 2) return parts[0] * 60 + parts[1];
+  if (parts.length === 1) return parts[0];
+  return 0;
+}
+
+async function searchYouTubeViaInnerTube(query, timeoutMs = 5000) {
+  const res = await fetch('https://www.youtube.com/youtubei/v1/search?prettyPrint=false', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'User-Agent': 'Mozilla/5.0' },
+    body: JSON.stringify({
+      context: { client: { clientName: 'WEB', clientVersion: '2.20240724.00.00', hl: 'en', gl: 'US' } },
+      query: String(query)
+    }),
+    signal: AbortSignal.timeout(timeoutMs)
+  });
+  if (!res.ok) throw new Error(`InnerTube HTTP ${res.status}`);
+  const data = await res.json();
+  const contents = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
+  const videos = [];
+  for (const sec of contents) {
+    const items = sec?.itemSectionRenderer?.contents || [];
+    for (const it of items) {
+      const v = it?.videoRenderer;
+      if (v && v.videoId) {
+        const title = v.title?.runs?.map(r => r.text).join('') || 'Unknown Track';
+        const authorName = v.ownerText?.runs?.[0]?.text || v.longBylineText?.runs?.[0]?.text || 'Unknown Artist';
+        const timestamp = v.lengthText?.simpleText || 'Unknown';
+        const seconds = parseTimestampToSeconds(timestamp);
+        const thumbs = v.thumbnail?.thumbnails || [];
+        const thumbnail = thumbs.length > 0 ? thumbs[thumbs.length - 1].url : '';
+        videos.push({
+          url: `https://youtube.com/watch?v=${v.videoId}`,
+          title,
+          author: { name: authorName },
+          timestamp,
+          seconds,
+          views: 0,
+          thumbnail,
+          image: thumbnail,
+          ago: v.publishedTimeText?.simpleText || '',
+          videoId: v.videoId
+        });
+        if (videos.length >= 5) break;
+      }
+    }
+    if (videos.length >= 5) break;
+  }
+  return videos.length > 0 ? { videos } : null;
+}
+
+async function ytsWithTimeout(query, timeoutMs = 4500) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      yts(query),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`yt-search timed out after ${timeoutMs}ms`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function cachedYts(query) {
+  if (!query) return null;
+  const key = query.toLowerCase().trim();
+  const hit = ytsCache.get(key);
+  if (hit && Date.now() < hit.expiresAt) {
+    return hit.result;
+  }
+  let result = null;
+  // Primary: fast InnerTube search (<1s); fallback to yt-search with 4.5s timeout
+  if (typeof query === 'string') {
+    try {
+      result = await searchYouTubeViaInnerTube(query, 5000);
+    } catch (err) {
+      console.warn('⚠️ InnerTube search failed, falling back to yt-search:', err.message);
+    }
+  }
+  if (!result) {
+    result = await ytsWithTimeout(query, 4500);
+  }
+  if (result) {
+    ytsCache.set(key, { result, expiresAt: Date.now() + YTS_CACHE_TTL_MS });
+  }
+  return result;
+}
+
+// Prune expired entries every 15 minutes to avoid unbounded memory growth
+setInterval(() => {
+  const now = Date.now();
+  for (const [k, v] of ytsCache) {
+    if (now >= v.expiresAt) ytsCache.delete(k);
+  }
+}, 15 * 60 * 1000);
+
+async function getTtsUrl(text, lang = 'en') {
+  return generateAndNormalizeTts(text, lang);
+}
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env explicitly from script directory and current working directory with override: true
-if (fs.existsSync(path.join(__dirname, ".env"))) {
-  dotenv.config({ path: path.join(__dirname, ".env"), override: true });
+// Load .env
+if (fs.existsSync(path.join(__dirname, '.env'))) {
+  dotenv.config({ path: path.join(__dirname, '.env') });
+} else {
+  dotenv.config();
 }
-if (fs.existsSync(path.join(process.cwd(), ".env"))) {
-  dotenv.config({ path: path.join(process.cwd(), ".env"), override: true });
+
+const PORT = process.env.PORT || 3000;
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'changeme';
+const SESSION_SECRET = process.env.SESSION_SECRET || 'main_server_session_secret_key_123';
+const AUDIO_SERVER_URL = (process.env.AUDIO_SERVER_URL || 'http://localhost:8000').replace(/\/+$/, '');
+const AUDIO_SECRET = process.env.AUDIO_SECRET || 'supersecret_audio_key_123';
+const DOWNLOAD_WORKER_URL = (process.env.DOWNLOAD_WORKER_URL || '').replace(/\/+$/, '');
+const BOT_IPC_URL = process.env.BOT_IPC_URL || 'http://127.0.0.1:5001';
+const IPC_SECRET = process.env.IPC_SECRET || 'highrise_music_secret_2026';
+const CONTROLLER_URL = (process.env.CONTROLLER_URL || `http://localhost:${PORT}`).replace(/\/+$/, '');
+
+const CACHE_DIR = process.env.CACHE_DIR || path.join(__dirname, 'cache');
+if (!fs.existsSync(CACHE_DIR)) {
+  try {
+    fs.mkdirSync(CACHE_DIR, { recursive: true });
+  } catch (err) {
+    console.error('Failed to create cache dir:', err.message);
+  }
 }
-dotenv.config({ override: true });
 
-const CACHE_DIR = path.join(__dirname, 'cache');
-const TTS_CACHE_DIR = path.join(__dirname, 'tts_cache');
-try {
-  if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
-  if (!fs.existsSync(TTS_CACHE_DIR)) fs.mkdirSync(TTS_CACHE_DIR, { recursive: true });
-} catch (_) {}
+// ==========================================
+// 💾 LRU CACHE PRUNER (10 Songs + 10 TTS Max)
+// Keeps at most 10 songs and 10 TTS files,
+// evicting oldest (LRU) to save disk space.
+// PROTECTS: telegram_vault.json & state files!
+// ==========================================
+const CACHE_MAX_SONGS = parseInt(process.env.CACHE_MAX_SONGS || '10', 10);
+const CACHE_MAX_TTS = parseInt(process.env.CACHE_MAX_TTS || '10', 10);
 
-// Process Crash Guardian - Prevents unhandled errors from terminating the server
+function addTrackToActiveSet(track, activeFiles) {
+  if (!track) return;
+  const rawTitle = track.title || track.metadata?.title || '';
+  const url = track.url || '';
+
+  // 1. Direct match if url contains song_ or custom_
+  const m = url.match(/(song_[a-zA-Z0-9_.-]+|custom_[a-zA-Z0-9_.-]+)/);
+  if (m) {
+    const base = m[1].replace(/\.(mp3|m4a|json)$/, '');
+    activeFiles.add(base);
+    activeFiles.add(`${base}.mp3`);
+    activeFiles.add(`${base}.m4a`);
+    activeFiles.add(`${base}.json`);
+  }
+
+  // 2. Computed getSongCacheKey
+  try {
+    const cacheKey = getSongCacheKey(url, rawTitle);
+    if (cacheKey) {
+      activeFiles.add(`song_${cacheKey}`);
+      activeFiles.add(`song_${cacheKey}.mp3`);
+      activeFiles.add(`song_${cacheKey}.m4a`);
+      activeFiles.add(`song_${cacheKey}.json`);
+    }
+  } catch (_) {}
+
+  // 3. YouTube video ID directly
+  const ytMatch = url.match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
+  if (ytMatch) {
+    activeFiles.add(`song_yt_${ytMatch[1]}`);
+    activeFiles.add(`song_yt_${ytMatch[1]}.mp3`);
+    activeFiles.add(`song_yt_${ytMatch[1]}.m4a`);
+    activeFiles.add(`song_yt_${ytMatch[1]}.json`);
+  }
+}
+
+function pruneSongCache() {
+  try {
+    if (!fs.existsSync(CACHE_DIR)) return;
+    const allFiles = fs.readdirSync(CACHE_DIR);
+
+    // Active files currently playing or queued across rooms to protect from eviction
+    const activeFiles = new Set();
+    if (typeof rooms !== 'undefined') {
+      for (const r of Object.values(rooms)) {
+        if (r && r.currentTrack) {
+          addTrackToActiveSet(r.currentTrack, activeFiles);
+        }
+        for (const q of (r?.queue || [])) {
+          addTrackToActiveSet(q, activeFiles);
+        }
+      }
+    }
+
+    const songFiles = [];
+    const ttsFiles = [];
+
+    for (const f of allFiles) {
+      // STRICT PROTECTION: Never delete database, vault, or persistent state files
+      if (
+        f === 'telegram_vault.json' ||
+        f.startsWith('telegram_vault') ||
+        f.startsWith('queue_state') ||
+        f.startsWith('playback_state')
+      ) {
+        continue;
+      }
+
+      // Ignore temporary files
+      if (f.startsWith('temp_') || f.endsWith('.tmp') || f.endsWith('.part') || f.endsWith('.raw')) {
+        continue;
+      }
+
+      // Don't evict currently playing or queued songs
+      if (activeFiles.has(f) || activeFiles.has(f.replace(/\.(mp3|m4a|json)$/, ''))) {
+        continue;
+      }
+
+      const fullPath = path.join(CACHE_DIR, f);
+      let stat;
+      try {
+        stat = fs.statSync(fullPath);
+      } catch (_) {
+        continue;
+      }
+
+      if (f.startsWith('tts_') && f.endsWith('.mp3')) {
+        ttsFiles.push({ file: f, fullPath, mtimeMs: stat.mtimeMs, size: stat.size });
+      } else if (f.endsWith('.mp3') || f.endsWith('.m4a')) {
+        songFiles.push({ file: f, fullPath, mtimeMs: stat.mtimeMs, size: stat.size });
+      }
+    }
+
+    // Sort newest first (descending mtimeMs)
+    songFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    ttsFiles.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+    let freedBytes = 0;
+    let evictedSongs = 0;
+    let evictedTts = 0;
+
+    // Prune songs beyond CACHE_MAX_SONGS (10)
+    if (songFiles.length > CACHE_MAX_SONGS) {
+      const songsToDelete = songFiles.slice(CACHE_MAX_SONGS);
+      for (const item of songsToDelete) {
+        try {
+          fs.unlinkSync(item.fullPath);
+          freedBytes += item.size;
+          evictedSongs++;
+          // Delete companion metadata json if present
+          const jsonPath = item.fullPath.replace(/\.(mp3|m4a)$/, '.json');
+          if (fs.existsSync(jsonPath)) {
+            try { fs.unlinkSync(jsonPath); } catch (_) {}
+          }
+        } catch (err) {
+          console.warn(`[CachePruner] Failed to delete song ${item.file}:`, err.message);
+        }
+      }
+    }
+
+    // Prune TTS beyond CACHE_MAX_TTS (10)
+    if (ttsFiles.length > CACHE_MAX_TTS) {
+      const ttsToDelete = ttsFiles.slice(CACHE_MAX_TTS);
+      for (const item of ttsToDelete) {
+        try {
+          fs.unlinkSync(item.fullPath);
+          freedBytes += item.size;
+          evictedTts++;
+        } catch (err) {
+          console.warn(`[CachePruner] Failed to delete TTS ${item.file}:`, err.message);
+        }
+      }
+    }
+
+    if (evictedSongs > 0 || evictedTts > 0) {
+      console.log(`🗑️ [CachePruner] Evicted ${evictedSongs} song(s) and ${evictedTts} TTS file(s), freed ${(freedBytes / 1024 / 1024).toFixed(2)} MB. Retaining ${Math.min(songFiles.length, CACHE_MAX_SONGS)} songs and ${Math.min(ttsFiles.length, CACHE_MAX_TTS)} TTS.`);
+    }
+  } catch (err) {
+    console.warn('⚠️ [CachePruner] Error during prune:', err.message);
+  }
+}
+
+// Run immediately on startup, then every 10 minutes
+pruneSongCache();
+setInterval(pruneSongCache, 10 * 60 * 1000);
+
+// Process Crash Guardian
 process.on('uncaughtException', (err) => {
-  console.error('💥 [Crash Guardian] Uncaught Exception:', err.message, err.stack);
+  console.error('💥 [MainController Crash Guardian] Uncaught Exception:', err.message);
 });
-
-process.on('unhandledRejection', (reason, promise) => {
-  console.error('💥 [Crash Guardian] Unhandled Rejection at:', promise, 'reason:', reason);
+process.on('unhandledRejection', (reason) => {
+  console.error('💥 [MainController Crash Guardian] Unhandled Rejection:', reason);
 });
-
 
 const app = express();
-app.set("trust proxy", 1);
+app.set('trust proxy', 1);
+
+// Raw binary body parser for direct MP3 dashboard upload (up to 100 MB)
+app.use('/api/upload-mp3', express.raw({
+  type: () => true,
+  limit: '100mb'
+}));
+
 app.use(express.json());
 
-let resolvedFfmpegPath = null;
+// Dynamic Residential Bridge state (Android Termux)
+let activeResidentialBridgeUrl = null;
+let lastResidentialBridgeHeartbeat = 0;
 
-function getFFmpegPath() {
-  if (resolvedFfmpegPath) return resolvedFfmpegPath;
-
-  // 1. Explicit environment variable
-  if (process.env.FFMPEG_PATH && fs.existsSync(process.env.FFMPEG_PATH)) {
-    resolvedFfmpegPath = process.env.FFMPEG_PATH;
-    console.log(`🎬 Using FFmpeg from FFMPEG_PATH: ${resolvedFfmpegPath}`);
-    return resolvedFfmpegPath;
-  }
-
-  // 2. Check ffmpeg-static package
-  if (ffmpegStatic && typeof ffmpegStatic === "string" && fs.existsSync(ffmpegStatic)) {
-    try {
-      if (process.platform !== "win32") {
-        try { fs.chmodSync(ffmpegStatic, 0o755); } catch (e) {}
-      }
-      resolvedFfmpegPath = ffmpegStatic;
-      console.log(`🎬 Using FFmpeg from ffmpeg-static: ${resolvedFfmpegPath}`);
-      return resolvedFfmpegPath;
-    } catch (e) {}
-  }
-
-  // 3. Check system PATH via which/where
+// ==========================================
+// 🎙️ UPSTREAM SPEECH & TTS NORMALIZATION (96kbps CBR)
+// Pre-transcodes all voice announcements to strict
+// 96kbps CBR 44.1kHz stereo MP3 format before offloading
+// to zero-CPU Audio Servers.
+// ==========================================
+async function generateAndNormalizeTts(text, lang = 'en') {
   try {
-    const cmd = process.platform === "win32" ? "where ffmpeg" : "which ffmpeg";
-    const systemPath = execSync(cmd, { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim().split(/\r?\n/)[0];
-    if (systemPath && fs.existsSync(systemPath)) {
-      resolvedFfmpegPath = systemPath;
-      console.log(`🎬 Using system FFmpeg: ${resolvedFfmpegPath}`);
-      return resolvedFfmpegPath;
+    const clean = (text || '').slice(0, 200).trim();
+    if (!clean) return null;
+
+    // 🔒 STRICT RULE: TTS is SOLELY produced by the Termux Residential Bridge.
+    // If the Termux bridge is unavailable or offline, NO TTS is played.
+    const isBridgeAlive = Boolean(activeResidentialBridgeUrl && (Date.now() - lastResidentialBridgeHeartbeat < 120000));
+    if (!isBridgeAlive) {
+      console.log(`🔇 [TTS] Termux residential bridge is unavailable — skipping TTS announcement entirely per architectural rule.`);
+      return null;
     }
-  } catch (e) {}
 
-  // 4. Common standard Linux/Unix installation locations
-  const commonPaths = [
-    "/usr/bin/ffmpeg",
-    "/usr/local/bin/ffmpeg",
-    "/bin/ffmpeg",
-    "/usr/lib/ffmpeg"
-  ];
-  for (const p of commonPaths) {
-    if (fs.existsSync(p)) {
-      resolvedFfmpegPath = p;
-      console.log(`🎬 Using FFmpeg at standard path: ${resolvedFfmpegPath}`);
-      return resolvedFfmpegPath;
-    }
-  }
+    const hash = crypto.createHash('md5').update(`${clean}_${lang || 'en'}`).digest('hex').slice(0, 16);
+    const ttsFile = path.join(CACHE_DIR, `tts_${hash}.mp3`);
 
-  // 5. Fallback: return 'ffmpeg' and let OS resolve from PATH
-  resolvedFfmpegPath = "ffmpeg";
-  console.log(`🎬 Falling back to 'ffmpeg' from PATH`);
-  return resolvedFfmpegPath;
-}
-
-// Serve static dashboard files with browser cache to eliminate repeat disk I/O and CPU
-app.use(express.static(path.join(__dirname, "public"), { maxAge: "1d", etag: true }));
-
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "changeme";
-const SESSION_SECRET = process.env.SESSION_SECRET || crypto.randomBytes(32).toString("hex");
-
-if (ADMIN_PASSWORD === "changeme") {
-  console.warn("⚠️ [Security] ADMIN_PASSWORD is set to default 'changeme'! Configure a strong ADMIN_PASSWORD in .env.");
-}
-if (!process.env.IPC_SECRET) {
-  console.warn("⚠️ [Security] IPC_SECRET is unset! Internal bot IPC requests will fail authentication.");
-}
-
-const sessionMiddleware = session({
-  secret: SESSION_SECRET,
-  resave: false,
-  saveUninitialized: false,
-  cookie: { httpOnly: true, sameSite: "lax", secure: false, maxAge: 86400000 } // 24h
-});
-
-// Bypass session allocation on high-frequency streaming and health routes to save CPU & RAM
-app.use((req, res, next) => {
-  const p = req.path.toLowerCase();
-  if (p === "/stream" || p.startsWith("/stream") || p === "/health" || p === "/ping" || p.startsWith("/assets")) {
-    return next();
-  }
-  return sessionMiddleware(req, res, next);
-});
-
-const loginLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 30, // 30 requests per windowMs
-  message: { error: "Too many login attempts, please try again later." }
-});
-
-const apiLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 minute
-  max: 180, // 180 requests per minute
-  standardHeaders: true,
-  legacyHeaders: false,
-  message: { error: "Too many requests, please slow down." }
-});
-
-function timingSafeCompare(a, b) {
-  if (typeof a !== "string" || typeof b !== "string") return false;
-  const hashA = crypto.createHash("sha256").update(a, "utf8").digest();
-  const hashB = crypto.createHash("sha256").update(b, "utf8").digest();
-  return crypto.timingSafeEqual(hashA, hashB);
-}
-
-const requireAuth = (req, res, next) => {
-  if (req.session && req.session.authenticated) {
-    return next();
-  }
-  
-  const authHeader = req.headers.authorization;
-  if (typeof authHeader === "string" && authHeader.startsWith("Bearer ")) {
-    const token = authHeader.substring(7).trim();
-    if (timingSafeCompare(token, ADMIN_PASSWORD)) {
-      return next();
-    }
-  }
-
-  const rawQueryToken = req.query.token || req.query.auth || '';
-  const queryToken = typeof rawQueryToken === "string" ? rawQueryToken.trim() : '';
-  if (queryToken && timingSafeCompare(queryToken, ADMIN_PASSWORD)) {
-    return next();
-  }
-  
-  res.status(401).send({ error: "Unauthorized" });
-};
-
-// Global rate limiter (exempting live audio streaming)
-app.use((req, res, next) => {
-  const p = req.path.toLowerCase();
-  if (p === '/stream' || p.startsWith('/stream')) {
-    return next();
-  }
-  return apiLimiter(req, res, next);
-});
-
-// GLOBAL AUTH: Allow public listener/login/bridge endpoints; require auth for controls & admin APIs
-app.use((req, res, next) => {
-  const p2 = req.path.toLowerCase();
-  const publicPaths = [
-    '/', '/current', '/queue', '/stats', '/health', '/ping',
-    '/stream', '/search', '/api/login', '/api/register-bridge'
-  ];
-  if (publicPaths.includes(p2) || p2.startsWith('/stream') || p2.startsWith('/assets') || p2.startsWith('/public')) {
-    return next();
-  }
-  // Enforce auth strictly for administrative and playback mutation routes
-  return requireAuth(req, res, next);
-});
-
-// Early /health removed; comprehensive /health at line 2469 active
-
-
-// ==========================================
-// 🌉 MULTI-BRIDGE POOL & LOAD BALANCER
-// ==========================================
-class BridgePoolManager {
-  constructor() {
-    this.bridges = new Map();
-    this.storageFile = path.join(__dirname, 'cache', 'bridge_pool.json');
-    this.loadFromDisk();
-    setInterval(() => this.pruneStaleBridges(), 60000);
-  }
-
-  loadFromDisk() {
-    try {
-      const legacyFile = path.join(__dirname, 'cache', 'bridge_url.txt');
-      if (fs.existsSync(legacyFile)) {
-        const savedUrl = fs.readFileSync(legacyFile, 'utf8').trim();
-        if (savedUrl) this.register(savedUrl, 'Primary Bridge');
-      }
-
-      if (process.env.RESIDENTIAL_BRIDGE_URL) {
-        this.register(process.env.RESIDENTIAL_BRIDGE_URL, 'Env Bridge');
-      }
-
-      if (fs.existsSync(this.storageFile)) {
-        const data = JSON.parse(fs.readFileSync(this.storageFile, 'utf8'));
-        if (Array.isArray(data)) {
-          for (const b of data) {
-            if (b && b.url) {
-              this.bridges.set(b.url, {
-                url: b.url,
-                name: b.name || `Bridge-${this.bridges.size + 1}`,
-                lastSeen: b.lastSeen || Date.now(),
-                isHealthy: b.isHealthy ?? true,
-                lastHealthCheck: 0,
-                failCount: 0,
-                activeDownloads: 0,
-                totalDownloads: b.totalDownloads || 0
-              });
-            }
+    // Check L1 cache: return immediately if valid 96k CBR MP3 exists
+    if (fs.existsSync(ttsFile)) {
+      try {
+        const stat = fs.statSync(ttsFile);
+        if (stat.size >= 1000) {
+          const cachedBuf = fs.readFileSync(ttsFile);
+          if (is96kCbrMp3Buffer(cachedBuf)) {
+            console.log(`🎙️ [TTS] Cache hit for "${clean.slice(0, 30)}..." -> tts_${hash}.mp3`);
+            return `${CONTROLLER_URL}/api/audio-file/tts_${hash}.mp3`;
           }
         }
-      }
-    } catch (_) {}
-  }
-
-  saveToDisk() {
-    try {
-      const list = Array.from(this.bridges.values()).map(b => ({
-        url: b.url,
-        name: b.name,
-        lastSeen: b.lastSeen,
-        isHealthy: b.isHealthy,
-        totalDownloads: b.totalDownloads
-      }));
-      fs.writeFileSync(this.storageFile, JSON.stringify(list, null, 2), 'utf8');
-
-      const best = this.getPrimaryBridge();
-      if (best) {
-        fs.writeFileSync(path.join(__dirname, 'cache', 'bridge_url.txt'), best.url, 'utf8');
-      }
-    } catch (_) {}
-  }
-
-  register(rawUrl, customName = null) {
-    if (!rawUrl) return null;
-    const cleanUrl = rawUrl.trim().replace(/\/+$/, '');
-    const now = Date.now();
-    const existing = this.bridges.get(cleanUrl);
-
-    const record = {
-      url: cleanUrl,
-      name: customName || existing?.name || `Bridge-${this.bridges.size + 1}`,
-      lastSeen: now,
-      isHealthy: true,
-      lastHealthCheck: now,
-      failCount: 0,
-      activeDownloads: existing?.activeDownloads || 0,
-      totalDownloads: existing?.totalDownloads || 0
-    };
-
-    // Deduplicate: remove any stale tunnel for the same device name
-    if (customName) {
-      for (const [oldUrl, b] of this.bridges.entries()) {
-        if (b.name === customName && oldUrl !== cleanUrl) {
-          console.log(`🔄 [BridgePool] Replacing stale tunnel for "${customName}": ${oldUrl} -> ${cleanUrl}`);
-          this.bridges.delete(oldUrl);
-        }
-      }
+      } catch (_) {}
     }
 
-    const isNew = !existing;
-    this.bridges.set(cleanUrl, record);
-
-    if (isNew) {
-      console.log(`🌉 [BridgePool] Registered new residential bridge: "${record.name}" (${cleanUrl}) [Total bridges: ${this.bridges.size}]`);
-      this.saveToDisk();
-    } else {
-      existing.lastSeen = now;
-      existing.isHealthy = true;
-      existing.failCount = 0;
-      if (customName && existing.name !== customName) existing.name = customName;
-    }
-    return record;
-  }
-
-  remove(rawUrl) {
-    if (!rawUrl) return;
-    const cleanUrl = rawUrl.trim().replace(/\/+$/, '');
-    if (this.bridges.has(cleanUrl)) {
-      const b = this.bridges.get(cleanUrl);
-      console.log(`🧹 [BridgePool] Removed dead bridge "${b?.name || 'Bridge'}" (${cleanUrl})`);
-      this.bridges.delete(cleanUrl);
-      this.saveToDisk();
-    }
-  }
-
-  getPrimaryBridge() {
-    const active = this.getAvailableBridges();
-    return active.length > 0 ? active[0] : null;
-  }
-
-  getAvailableBridges() {
-    const now = Date.now();
-    const candidates = [];
-    for (const b of this.bridges.values()) {
-      const isAlive = (now - b.lastSeen < 300000) && b.failCount < 3;
-      if (isAlive && b.isHealthy) {
-        candidates.push(b);
-      }
-    }
-    // Load balance: least active downloads first, then lowest failCount, then newest
-    candidates.sort((a, b) => {
-      if (a.activeDownloads !== b.activeDownloads) return a.activeDownloads - b.activeDownloads;
-      if (a.failCount !== b.failCount) return a.failCount - b.failCount;
-      return b.lastSeen - a.lastSeen;
+    // Solely fetch from Termux Residential Bridge
+    const bridgeUrl = `${activeResidentialBridgeUrl}/tts?text=${encodeURIComponent(clean)}&lang=${encodeURIComponent(lang || 'en')}`;
+    console.log(`🎙️ [TTS] Requesting speech solely from Termux Residential Bridge: "${clean.slice(0, 40)}..."`);
+    const bridgeRes = await fetch(bridgeUrl, {
+      signal: AbortSignal.timeout(12000)
     });
-    return candidates;
-  }
 
-  async checkBridgeHealth(bridge) {
-    if (!bridge) return false;
-    const now = Date.now();
-    if (now - bridge.lastHealthCheck < 15000) {
-      return bridge.isHealthy;
+    if (!bridgeRes.ok) {
+      console.warn(`⚠️ [TTS] Termux residential bridge returned HTTP ${bridgeRes.status} for speech — skipping TTS.`);
+      return null;
     }
-    try {
-      const resp = await fetch(`${bridge.url}/health`, { signal: AbortSignal.timeout(3500) });
-      bridge.isHealthy = resp.ok;
-      if (resp.ok) {
-        bridge.failCount = 0;
-        bridge.lastSeen = now;
-      }
-    } catch (_) {
-      bridge.isHealthy = false;
-      bridge.failCount = (bridge.failCount || 0) + 1;
+
+    const arrayBuf = await bridgeRes.arrayBuffer();
+    const mp3Buffer = Buffer.from(arrayBuf);
+
+    if (mp3Buffer.length < 500 || !is96kCbrMp3Buffer(mp3Buffer)) {
+      console.warn('⚠️ [TTS] Termux bridge audio was corrupted, too small, or not valid 96kbps CBR MP3 — skipping TTS.');
+      return null;
     }
-    bridge.lastHealthCheck = now;
-    return bridge.isHealthy;
-  }
 
-  async checkPoolHealth() {
-    const candidates = Array.from(this.bridges.values());
-    if (candidates.length === 0) return false;
-    await Promise.allSettled(candidates.map(b => this.checkBridgeHealth(b)));
-    return candidates.some(b => b.isHealthy);
-  }
+    // Save pre-normalized 96k CBR MP3 directly to cache (0% Controller CPU, 0 FFmpeg processes)
+    fs.writeFileSync(ttsFile, mp3Buffer);
+    pruneSongCache();
 
-  markDownloadStart(bridge) {
-    if (bridge) {
-      bridge.activeDownloads = (bridge.activeDownloads || 0) + 1;
-      bridge.totalDownloads = (bridge.totalDownloads || 0) + 1;
-    }
-  }
-
-  markDownloadEnd(bridge, success = true) {
-    if (bridge) {
-      bridge.activeDownloads = Math.max(0, (bridge.activeDownloads || 1) - 1);
-      if (success) {
-        bridge.failCount = 0;
-        bridge.isHealthy = true;
-      } else {
-        bridge.failCount = (bridge.failCount || 0) + 1;
-        if (bridge.failCount >= 2) {
-          bridge.isHealthy = false;
-        }
-      }
-    }
-  }
-
-  pruneStaleBridges() {
-    const now = Date.now();
-    let pruned = 0;
-    for (const [url, b] of this.bridges.entries()) {
-      if (now - b.lastSeen > 900000) {
-        this.bridges.delete(url);
-        pruned++;
-      }
-    }
-    if (pruned > 0) {
-      console.log(`🧹 [BridgePool] Pruned ${pruned} offline bridge(s) [Active: ${this.bridges.size}]`);
-      this.saveToDisk();
-    }
-  }
-
-  getStatus() {
-    const now = Date.now();
-    const list = Array.from(this.bridges.values()).map(b => ({
-      name: b.name,
-      url: b.url,
-      isHealthy: b.isHealthy,
-      activeDownloads: b.activeDownloads,
-      totalDownloads: b.totalDownloads,
-      failCount: b.failCount,
-      lastSeenSecAgo: Math.floor((now - b.lastSeen) / 1000)
-    }));
-    return {
-      activeBridges: list.filter(b => b.isHealthy && b.lastSeenSecAgo < 300).length,
-      totalBridges: list.length,
-      bridges: list
-    };
-  }
-}
-
-const bridgePoolManager = new BridgePoolManager();
-let residentialBridgeUrl = bridgePoolManager.getPrimaryBridge()?.url || null;
-
-app.post("/api/register-bridge", (req, res) => {
-  const { url, name } = req.body || {};
-  if (!url) return res.status(400).json({ error: "Missing url parameter" });
-
-  // Validate URL — only allow http: (localhost/LAN) or https: (Cloudflare tunnels)
-  let parsed;
-  try {
-    parsed = new URL(url);
-  } catch {
-    return res.status(400).json({ error: "Invalid URL" });
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") {
-    return res.status(400).json({ error: "URL must use http or https" });
-  }
-  if (parsed.protocol === "http:") {
-    const host = parsed.hostname.toLowerCase();
-    const isLocal = host === "localhost" || host === "127.0.0.1" || host === "::1" || /^192\.168\./.test(host) || /^10\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
-    if (!isLocal) {
-      return res.status(400).json({ error: "Plain-http URLs are only allowed for localhost and LAN addresses" });
-    }
-  }
-
-  // If BRIDGE_SECRET is set, enforce it; otherwise log a one-time warning
-  const BRIDGE_SECRET = process.env.BRIDGE_SECRET;
-  if (BRIDGE_SECRET) {
-    const authHeader = req.headers.authorization;
-    const provided = typeof authHeader === "string" && authHeader.startsWith("Bearer ") ? authHeader.substring(7).trim() : "";
-    if (!timingSafeCompare(provided, BRIDGE_SECRET)) {
-      return res.status(401).json({ error: "Invalid or missing BRIDGE_SECRET" });
-    }
-  } else if (!app._bridgeSecretWarned) {
-    app._bridgeSecretWarned = true;
-    console.warn("⚠️ [Security] BRIDGE_SECRET is unset — /api/register-bridge is unauthenticated. Set BRIDGE_SECRET in .env to lock it down.");
-  }
-
-  const bridge = bridgePoolManager.register(url, name);
-  residentialBridgeUrl = bridgePoolManager.getPrimaryBridge()?.url || bridge.url;
-  res.json({
-    success: true,
-    bridge: {
-      name: bridge.name,
-      url: bridge.url
-    },
-    totalActiveBridges: bridgePoolManager.getAvailableBridges().length
-  });
-});
-
-app.get("/api/bridge-status", async (req, res) => {
-  const status = bridgePoolManager.getStatus();
-  res.json({
-    active: status.activeBridges > 0,
-    ...status
-  });
-});
-
-app.get("/ping", (req, res) => {
-  res.send("pong");
-});
-
-app.get("/debug-exec", (req, res) => res.status(403).send("Disabled for CPU protection."));
-
-app.get("/debug-ytdlp", async (req, res) => {
-  const testUrl = req.query.url || 'https://youtube.com/watch?v=NPRd7Xc0tfM';
-  const outTest = path.join(CACHE_DIR, `debug_${Date.now()}.m4a`);
-  
-  const results = {
-    platform: process.platform,
-    pythonCmd: PYTHON_CMD,
-    ytdlpPath: YTDLP_PATH,
-    ytdlpExists: fs.existsSync(YTDLP_PATH),
-    ytdlpSize: fs.existsSync(YTDLP_PATH) ? fs.statSync(YTDLP_PATH).size : 0,
-    envProxies: {
-      YTDLP_PROXY: process.env.YTDLP_PROXY || null,
-      PROXY: process.env.PROXY || null,
-      HTTP_PROXY: process.env.HTTP_PROXY || null,
-      HTTPS_PROXY: process.env.HTTPS_PROXY || null
-    },
-    versionStdout: '',
-    versionStderr: '',
-    downloadStdout: '',
-    downloadStderr: '',
-    code: null,
-    signal: null,
-    error: null,
-    durationMs: 0
-  };
-
-  const startTime = Date.now();
-
-  try {
-    const p = spawnYtdlp(['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
-    p.stdout.on('data', d => results.versionStdout += d.toString());
-    p.stderr.on('data', d => results.versionStderr += d.toString());
-    await new Promise(r => {
-      const t = setTimeout(() => { try { p.kill('SIGKILL'); } catch(e) {} r(); }, 4000);
-      p.on('close', () => { clearTimeout(t); r(); });
-      p.on('error', err => { clearTimeout(t); results.versionError = err.message; r(); });
-    });
-  } catch (e) {
-    results.versionError = e.message;
-  }
-
-  try {
-    const ytdlpArgs = [
-      '--force-ipv4',
-      '--no-cache-dir',
-      '--socket-timeout', '5',
-      '--retries', '1',
-      '--extractor-args', 'youtube:player_client=android,web',
-      '-f', 'ba/b[height<=360]/18/best',
-      '--no-playlist',
-      '--no-check-certificates',
-      '--newline',
-      '-v',
-      '-o', outTest,
-      testUrl
-    ];
-
-    const proc = spawnYtdlp(ytdlpArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-    proc.stdout.on('data', d => results.downloadStdout += d.toString());
-    proc.stderr.on('data', d => results.downloadStderr += d.toString());
-    
-    const timeout = setTimeout(() => {
-      results.timedOut = true;
-      try { proc.kill('SIGKILL'); } catch(e) {}
-    }, 12000);
-
-    await new Promise(r => {
-      proc.on('close', (c, s) => {
-        clearTimeout(timeout);
-        results.code = c;
-        results.signal = s;
-        r();
-      });
-      proc.on('error', err => {
-        clearTimeout(timeout);
-        results.error = err.message;
-        r();
-      });
-    });
-  } catch (e) {
-    results.error = e.message;
-  }
-
-  results.durationMs = Date.now() - startTime;
-  results.fileExists = fs.existsSync(outTest);
-  results.fileSize = results.fileExists ? fs.statSync(outTest).size : 0;
-  try { if (results.fileExists) fs.unlinkSync(outTest); } catch (e) {}
-
-  res.json(results);
-});
-
-app.post("/api/login", loginLimiter, (req, res) => {
-  const { password } = req.body || {};
-  if (typeof password === "string" && password && timingSafeCompare(password, ADMIN_PASSWORD)) {
-    req.session.authenticated = true;
-    res.send({ status: "ok", authenticated: true });
-  } else {
-    res.status(401).send({ error: "Invalid password" });
-  }
-});
-
-
-const __ytdlp_filename = fileURLToPath(import.meta.url);
-const __ytdlp_dirname = path.dirname(__ytdlp_filename);
-const isWindows = process.platform === "win32";
-const YTDLP_NAME = isWindows ? "yt-dlp.exe" : "yt-dlp";
-const YTDLP_PATH = path.join(__ytdlp_dirname, YTDLP_NAME);
-const YTDLP_URL = `https://github.com/yt-dlp/yt-dlp/releases/latest/download/${YTDLP_NAME}`;
-
-// On Pterodactyl containers, /home/container is mounted noexec.
-// The yt-dlp file is a Python zipapp (#!/usr/bin/env python3).
-// We must run it via python3 explicitly to bypass the noexec restriction.
-let PYTHON_CMD = null; // Will be set during startup
-
-function spawnYtdlp(args, options) {
-  if (PYTHON_CMD && !isWindows) {
-    // Run as: python3 -u /path/to/yt-dlp [args...] (-u forces unbuffered stdout/stderr)
-    return spawn(PYTHON_CMD, ['-u', YTDLP_PATH, ...args], options);
-  }
-  // Fallback: run directly (works on Windows, or if exec is allowed)
-  return spawn(YTDLP_PATH, args, options);
-}
-
-async function detectPython() {
-  for (const cmd of ['python3', 'python', '/usr/bin/python3', '/usr/local/bin/python3', '/usr/bin/python']) {
-    try {
-      const p = spawn(cmd, ['--version'], { stdio: ['ignore', 'pipe', 'pipe'] });
-      const result = await new Promise(resolve => {
-        let out = '';
-        p.stdout.on('data', d => out += d);
-        p.stderr.on('data', d => out += d);
-        const t = setTimeout(() => { try { p.kill('SIGKILL'); } catch(e) {} resolve(null); }, 3000);
-        p.on('close', code => { clearTimeout(t); resolve(code === 0 ? out.trim() : null); });
-        p.on('error', () => { clearTimeout(t); resolve(null); });
-      });
-      if (result) {
-        console.log(`🐍 Found ${cmd}: ${result}`);
-        return cmd;
-      }
-    } catch (e) {}
-  }
-  return null;
-}
-
-async function ensureYtDlp() {
-  // Detect Python first (needed on noexec containers)
-  if (!isWindows) {
-    PYTHON_CMD = await detectPython();
-    if (PYTHON_CMD) {
-      console.log(`🐍 Will run yt-dlp via: ${PYTHON_CMD} ${YTDLP_PATH}`);
-    } else {
-      console.log('⚠️ No python3 found, will try direct execution');
-    }
-  }
-  
-  if (fs.existsSync(YTDLP_PATH)) {
-    const stats = fs.statSync(YTDLP_PATH);
-    if (stats.size > 1000) {
-      if (!isWindows) {
-        try { fs.chmodSync(YTDLP_PATH, 0o755); } catch (e) {}
-      }
-      console.log("✅ yt-dlp binary exists and is ready.");
-      return true;
-    } else {
-      console.log("⚠️ yt-dlp binary is corrupted, re-downloading...");
-      try { fs.unlinkSync(YTDLP_PATH); } catch (e) {}
-    }
-  }
-
-  console.log("⬇️ Downloading latest yt-dlp binary from GitHub...");
-  
-  try {
-    const response = await fetch(YTDLP_URL, {
-      redirect: 'follow',
-      signal: AbortSignal.timeout(60000)
-    });
-    
-    if (!response.ok) {
-      console.error(`❌ yt-dlp download failed: HTTP ${response.status}`);
-      return false;
-    }
-    
-    // Stream to disk instead of buffering entire binary in memory
-    const tmpPath = YTDLP_PATH + '.tmp';
-    const fileStream = fs.createWriteStream(tmpPath);
-    await new Promise((resolve, reject) => {
-      response.body.pipe(fileStream);
-      response.body.on('error', reject);
-      fileStream.on('finish', resolve);
-      fileStream.on('error', reject);
-    });
-    fs.renameSync(tmpPath, YTDLP_PATH);
-    if (!isWindows) {
-      try { fs.chmodSync(YTDLP_PATH, 0o755); } catch (e) {}
-    }
-    
-    const stats = fs.statSync(YTDLP_PATH);
-    console.log(`✅ Latest yt-dlp binary downloaded (${(stats.size / 1024 / 1024).toFixed(1)} MB)`);
-    return true;
+    console.log(`🎙️ [TTS] Successfully cached 96kbps CBR announcement (solely via Termux Bridge) -> tts_${hash}.mp3`);
+    return `${CONTROLLER_URL}/api/audio-file/tts_${hash}.mp3`;
   } catch (err) {
-    console.error("❌ yt-dlp download failed:", err.message);
-    if (fs.existsSync(YTDLP_PATH)) {
-      try { fs.unlinkSync(YTDLP_PATH); } catch (e) {}
-    }
-    return false;
-  }
-}
-
-function getCookieArgs() {
-  // Completely disabled to eliminate YouTube reload challenges and timeout races
-  return [];
-}
-
-function getProxyArgs() {
-  const proxy = process.env.YTDLP_PROXY || process.env.PROXY;
-  if (proxy && proxy.trim().length > 0) {
-    console.log(`🌐 [ProxyEngine] Using proxy for stream requests: ${proxy.trim()}`);
-    return ['--proxy', proxy.trim()];
-  }
-  return [];
-}
-
-// Remove any stale local tmp directories that may contain dead PyInstaller locks
-try {
-  const staleTmp = path.join(__dirname, 'tmp');
-  if (fs.existsSync(staleTmp)) fs.rmSync(staleTmp, { recursive: true, force: true });
-} catch (e) {}
-const ytdlpEnv = {
-  ...process.env,
-  DENO_V8_FLAGS: '--max-old-space-size=48 --max-semi-space-size=1',
-  NODE_OPTIONS: '--max-old-space-size=48'
-};
-
-const QUEUE_FILE = path.join(__dirname, "queue_state.json");
-const PLAYBACK_STATE_FILE = path.join(__dirname, "playback_state.json");
-const ERROR_LOG_FILE = path.join(__dirname, "logs", "errors.log");
-const SETTINGS_FILE = path.join(__dirname, "server_settings.json");
-
-const DEFAULT_SETTINGS = {
-  announcementsEnabled: false,
-  announcementVoice: 'en',
-  announcementWordLimit: 10,
-  volume: 100,
-  audioBitrate: '192k'
-};
-
-const VOICE_OPTIONS = {
-  'en': 'English (US)',
-  'en-gb': 'English (UK)',
-  'en-au': 'English (Australia)',
-  'en-in': 'English (India)',
-  'hi': 'Hindi',
-  'ur': 'Urdu',
-  'es': 'Spanish',
-  'fr': 'French',
-  'de': 'German',
-  'it': 'Italian',
-  'pt': 'Portuguese',
-  'ar': 'Arabic'
-};
-
-const AVAILABLE_BITRATES = ['96k', '128k', '192k', '256k', '320k'];
-
-function loadSettings() {
-  try {
-    if (fs.existsSync(SETTINGS_FILE)) {
-      const data = fs.readFileSync(SETTINGS_FILE, 'utf8');
-      const loaded = JSON.parse(data);
-      return { ...DEFAULT_SETTINGS, ...loaded };
-    }
-  } catch (err) {
-    console.error('⚠️ Failed to load settings, using defaults:', err.message);
-  }
-  return { ...DEFAULT_SETTINGS };
-}
-
-async function saveSettings() {
-  try {
-    const settings = { 
-      announcementsEnabled,
-      announcementVoice,
-      announcementWordLimit,
-      volume,
-      audioBitrate
-    };
-    await atomicWrite(SETTINGS_FILE, JSON.stringify(settings, null, 2));
-    console.log(`💾 Settings saved (announcements: ${announcementsEnabled}, voice: ${announcementVoice}, wordLimit: ${announcementWordLimit}, volume: ${volume}%, bitrate: ${audioBitrate})`);
-  } catch (err) {
-    console.error('⚠️ Failed to save settings:', err.message);
-  }
-}
-
-const settings = loadSettings();
-let announcementsEnabled = settings.announcementsEnabled;
-let announcementVoice = settings.announcementVoice || 'en';
-let announcementWordLimit = settings.announcementWordLimit || 10;
-let volume = settings.volume !== undefined ? settings.volume : 100;
-let audioBitrate = settings.audioBitrate || '192k';
-
-function truncateToWords(text, wordLimit) {
-  const words = text.split(/\s+/);
-  if (words.length <= wordLimit) return text;
-  return words.slice(0, wordLimit).join(' ');
-}
-
-async function generateTTSAudio(text) {
-  try {
-    console.log(`🎙️ Generating TTS: "${text.substring(0, 50)}..."`);
-    
-    let ttsUrlTimer = null;
-    const url = await Promise.race([
-      Promise.resolve(googleTTS(text, announcementVoice, 1)),
-      new Promise((_, reject) => {
-        ttsUrlTimer = setTimeout(() => reject(new Error('TTS URL generation timed out')), 8000);
-      })
-    ]).finally(() => {
-      if (ttsUrlTimer) clearTimeout(ttsUrlTimer);
-    });
-    
-    const response = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!response.ok) {
-      throw new Error(`TTS fetch failed: ${response.status}`);
-    }
-    
-    // Stream to memory buffer via pipeline to avoid allocating response.buffer() internals
-    const chunks = [];
-    await new Promise((resolve, reject) => {
-      response.body.on('data', chunk => chunks.push(chunk));
-      response.body.on('end', resolve);
-      response.body.on('error', reject);
-    });
-    const audioBuffer = Buffer.concat(chunks);
-    console.log(`✅ TTS audio fetched (${(audioBuffer.length / 1024).toFixed(1)} KB)`);
-    
-    return audioBuffer;
-  } catch (err) {
-    console.error('❌ TTS generation failed:', err.message);
+    console.warn('⚠️ [TTS] generateAndNormalizeTts error (skipping TTS announcement):', err.message);
     return null;
   }
 }
 
-let activeTtsDecoder = null;
+// Register Residential Bridge from Android Termux
+app.post('/api/register-bridge', (req, res) => {
+  const { url } = req.body || {};
+  if (!url) return res.status(400).json({ error: 'Missing bridge url' });
 
-async function injectTTSToStream(ttsBuffer, onDecoded = null, cacheKey = null) {
-  const cachedPcmPath = cacheKey ? path.join(CACHE_DIR, `tts_${cacheKey}.pcm`) : null;
-  if (cachedPcmPath && fs.existsSync(cachedPcmPath)) {
-    try {
-      const cachedPcm = await fs.promises.readFile(cachedPcmPath);
-      if (cachedPcm.length > 10000) {
-        console.log(`⚡ [TTSCache] Instant 0ms Cache Hit for announcement (${(cachedPcm.length / 1024).toFixed(1)} KB PCM, 0% CPU!)`);
-        try {
-          const now = new Date();
-          fs.utimesSync(cachedPcmPath, now, now);
-        } catch (_) {}
-        if (typeof onDecoded === 'function') {
-          try { onDecoded(); } catch (e) {}
-        }
-        await streamManager.feedPCMAudioRealtime(cachedPcm);
-        console.log('✅ TTS announcement completed playback');
-        return true;
-      }
-    } catch (_) {}
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return res.status(400).json({ error: 'Invalid URL' });
+  }
+  if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') {
+    return res.status(400).json({ error: 'URL must use http or https' });
+  }
+  if (parsed.protocol === 'http:') {
+    const host = parsed.hostname.toLowerCase();
+    const isLocal = host === 'localhost' || host === '127.0.0.1' || host === '::1' || /^192\.168\./.test(host) || /^10\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host);
+    if (!isLocal) {
+      return res.status(400).json({ error: 'Plain-http URLs are only allowed for localhost and LAN addresses' });
+    }
   }
 
-  return new Promise((resolve) => {
-    if (!ttsBuffer || !streamManager.pcmInputStream || streamManager.pcmInputStream.destroyed) {
-      if (typeof onDecoded === 'function') onDecoded();
-      resolve(false);
-      return;
+  const BRIDGE_SECRET = process.env.BRIDGE_SECRET;
+  if (BRIDGE_SECRET) {
+    const authHeader = req.headers.authorization;
+    const provided = typeof authHeader === 'string' && authHeader.startsWith('Bearer ') ? authHeader.substring(7).trim() : '';
+    if (!timingSafeCompare(provided, BRIDGE_SECRET)) {
+      return res.status(401).json({ error: 'Invalid or missing BRIDGE_SECRET' });
     }
-    
-    console.log('🎙️ Decoding TTS to PCM and injecting to stream...');
-    
-    const volumeFilter = volume !== 100 ? `volume=${volume / 100}` : '';
-    const filterArgs = volumeFilter ? ['-af', volumeFilter] : [];
-    
-    const ttsDecoder = spawn(getFFmpegPath(), [
-      '-threads', '1',
-      '-i', 'pipe:0',
-      '-f', 's16le',
-      '-ar', '44100',
-      '-ac', '2',
-      ...filterArgs,
-      'pipe:1'
-    ], {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    activeTtsDecoder = ttsDecoder;
-    
-    let pcmData = [];
-    let decodeSettled = false;
+  }
 
-    const decodeTimeout = setTimeout(() => {
-      if (decodeSettled) return;
-      decodeSettled = true;
-      console.error('⚠️ TTS decoder timed out after 15s, terminating process');
-      try {
-        if (ttsDecoder.stdin && !ttsDecoder.stdin.destroyed) ttsDecoder.stdin.destroy();
-        if (ttsDecoder.stdout && !ttsDecoder.stdout.destroyed) ttsDecoder.stdout.destroy();
-        if (ttsDecoder.stderr && !ttsDecoder.stderr.destroyed) ttsDecoder.stderr.destroy();
-        if (!ttsDecoder.killed) ttsDecoder.kill('SIGKILL');
-      } catch (_) {}
-      if (activeTtsDecoder === ttsDecoder) activeTtsDecoder = null;
-      if (typeof onDecoded === 'function') {
-        try { onDecoded(); } catch (e) {}
-      }
-      resolve(false);
-    }, 15000);
-    
-    ttsDecoder.stdout.on('data', (chunk) => {
-      pcmData.push(chunk);
-    });
-    
-    ttsDecoder.stderr.on('data', (data) => {
-      const msg = data.toString();
-      if (msg.includes('Error')) {
-        console.error('TTS decode error:', msg);
-      }
-    });
-    
-    ttsDecoder.on('close', async (code) => {
-      clearTimeout(decodeTimeout);
-      if (activeTtsDecoder === ttsDecoder) activeTtsDecoder = null;
-      if (decodeSettled) return;
-      decodeSettled = true;
+  activeResidentialBridgeUrl = url.replace(/\/+$/, '');
+  lastResidentialBridgeHeartbeat = Date.now();
+  console.log(`🏠 [ResidentialBridge] Registered active Termux bridge: ${activeResidentialBridgeUrl}`);
+  res.json({ status: 'ok', bridgeUrl: activeResidentialBridgeUrl });
+});
 
-      if (typeof onDecoded === 'function') {
-        try { onDecoded(); } catch (e) {}
-      }
-      if (code === 0 && pcmData.length > 0) {
-        const fullPCM = Buffer.concat(pcmData);
-        const durationSec = (fullPCM.length / 176400).toFixed(1);
-        console.log(`✅ TTS decoded (${(fullPCM.length / 1024).toFixed(1)} KB PCM, ~${durationSec}s speech), playing smoothly at 1x rate...`);
-        
-        if (cachedPcmPath && fullPCM.length > 10000) {
-          fs.promises.writeFile(cachedPcmPath, fullPCM)
-            .then(() => pruneTTSCache())
-            .catch(() => {});
-        }
-        
-        try {
-          await streamManager.feedPCMAudioRealtime(fullPCM);
-          console.log('✅ TTS announcement completed playback');
-          resolve(true);
-        } catch (err) {
-          console.error('Failed to inject TTS:', err.message);
-          resolve(false);
-        }
-      } else {
-        console.error('TTS decode failed with code:', code);
-        resolve(false);
-      }
-    });
-    
-    ttsDecoder.on('error', (err) => {
-      clearTimeout(decodeTimeout);
-      if (activeTtsDecoder === ttsDecoder) activeTtsDecoder = null;
-      if (decodeSettled) return;
-      decodeSettled = true;
-
-      if (typeof onDecoded === 'function') {
-        try { onDecoded(); } catch (e) {}
-      }
-      console.error('TTS decoder error:', err.message);
-      resolve(false);
-    });
-    
-    if (ttsDecoder.stdin) {
-      ttsDecoder.stdin.on('error', () => {});
-      ttsDecoder.stdin.write(ttsBuffer);
-      ttsDecoder.stdin.end();
-    }
+app.get('/api/bridge-status', (req, res) => {
+  const isAlive = Boolean(activeResidentialBridgeUrl && (Date.now() - lastResidentialBridgeHeartbeat < 120000));
+  res.json({
+    active: isAlive,
+    engine: isAlive ? 'YouTube (via Termux Bridge)' : 'JioSaavn (via Cloud Worker)',
+    bridgeUrl: isAlive ? activeResidentialBridgeUrl : null,
+    lastHeartbeat: lastResidentialBridgeHeartbeat ? `${Math.floor((Date.now() - lastResidentialBridgeHeartbeat) / 1000)}s ago` : 'never'
   });
+});
+
+// Pure Headless Controller Landing Page
+app.get('/', (req, res) => {
+  res.type('html').send(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Central Controller | Highrise Multi-Room Engine</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #07090e; color: #f1f5f9; text-align: center; padding: 80px 20px; }
+    .badge { display: inline-block; background: rgba(16, 185, 129, 0.15); color: #34d399; border: 1px solid rgba(16, 185, 129, 0.3); padding: 6px 16px; border-radius: 999px; font-weight: 600; font-size: 0.85rem; margin-bottom: 24px; }
+    h1 { font-size: 2.4rem; font-weight: 800; color: #38bdf8; margin-bottom: 12px; letter-spacing: -0.5px; }
+    p { color: #94a3b8; font-size: 1.05rem; max-width: 620px; margin: 0 auto 40px auto; line-height: 1.6; }
+    .grid { display: flex; justify-content: center; gap: 24px; flex-wrap: wrap; max-width: 820px; margin: 0 auto; }
+    .card { background: #111827; border: 1px solid #1f2937; border-radius: 14px; padding: 28px 24px; width: 360px; text-align: left; transition: all 0.25s ease; box-shadow: 0 10px 30px rgba(0,0,0,0.5); }
+    .card:hover { transform: translateY(-4px); border-color: #38bdf8; box-shadow: 0 15px 35px rgba(56, 189, 248, 0.15); }
+    .card h3 { margin: 0 0 10px 0; font-size: 1.35rem; color: #f8fafc; font-weight: 700; }
+    .card p { font-size: 0.92rem; color: #94a3b8; margin: 0 0 20px 0; }
+    .btn { display: inline-block; background: #0284c7; color: white; padding: 10px 20px; border-radius: 8px; font-weight: 600; text-decoration: none; font-size: 0.92rem; transition: background 0.2s; }
+    .btn:hover { background: #0369a1; }
+    .api-hint { margin-top: 60px; font-size: 0.85rem; color: #64748b; font-family: monospace; }
+  </style>
+</head>
+<body>
+  <div class="badge">● Headless Central Controller Active</div>
+  <h1>Central Music Controller & Brain</h1>
+  <p>The central server runs strictly as the headless engine for downloads, caching, and multi-room management. Each room has its own dedicated dashboard hosted on its audio server:</p>
+  <div class="grid">
+    <div class="card">
+      <h3>🎧 Room 1 (Main Lounge)</h3>
+      <p>Dedicated Audio Server on Node DE-04:30238</p>
+      <a class="btn" href="http://92.118.206.166:30238/" target="_blank">Open Room 1 Dashboard →</a>
+    </div>
+    <div class="card">
+      <h3>🎉 Room 2 (Party Room)</h3>
+      <p>Dedicated Audio Server on Node DE-06:30289</p>
+      <a class="btn" href="http://2.56.246.128:30289/" target="_blank">Open Room 2 Dashboard →</a>
+    </div>
+  </div>
+  <div class="api-hint">
+    REST API: <code>/api/rooms</code> • <code>/health</code> • <code>/api/vault</code> • <code>/api/audio-file/:id</code>
+  </div>
+</body>
+</html>`);
+});
+
+// Session Setup
+app.use(session({
+  secret: SESSION_SECRET,
+  resave: false,
+  saveUninitialized: false,
+  cookie: { httpOnly: true, sameSite: 'lax', maxAge: 86400000 }
+}));
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 30,
+  message: { error: 'Too many login attempts, please try again later.' }
+});
+
+const apiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 180,
+  message: { error: 'Too many requests, please slow down.' }
+});
+
+function timingSafeCompare(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string') return false;
+  const hashA = crypto.createHash('sha256').update(a, 'utf8').digest();
+  const hashB = crypto.createHash('sha256').update(b, 'utf8').digest();
+  return crypto.timingSafeEqual(hashA, hashB);
 }
 
-// Pre-allocated static silence buffers to eliminate continuous heap allocations (20/sec)
-const SILENCE_50MS_PCM = Buffer.alloc(Math.floor((44100 * 50) / 1000) * 2 * 2, 0);
-const SILENCE_300MS_PCM = Buffer.alloc(Math.floor((44100 * 300) / 1000) * 2 * 2, 0);
+const requireAuth = (req, res, next) => {
+  if (req.session && req.session.authenticated) return next();
 
-const MAX_STREAM_CLIENTS = 100;
+  const authHeader = req.headers.authorization;
+  if (authHeader && authHeader.startsWith('Bearer ')) {
+    const token = authHeader.substring(7).trim();
+    if (timingSafeCompare(token, ADMIN_PASSWORD)) return next();
+  }
 
-class PersistentStreamManager {
-  constructor() {
-    this.clients = new Set();
-    this.clientMetadata = new Map();
-    this.maxClients = MAX_STREAM_CLIENTS;
-    this.audioBuffer = [];
-    this.maxBufferSize = 200;
-    this.instantStartChunks = 25;
-    
-    this.stats = {
-      totalBytes: 0,
-      droppedClients: 0,
-      peakListeners: 0,
-      startTime: Date.now(),
-      totalConnections: 0
-    };
-    
-    this.persistentEncoder = null;
-    this.pcmInputStream = null;
-    this.isEncoderRunning = false;
-    this.isSendingSilence = false;
-    this.silenceInterval = null;
-    this.isShuttingDown = false;
-    
-    this.transitionSilenceMs = 150;
-    this.transitionPcm = null;
-    this.transitionOffset = 0;
-    this.loadTransitionTrack();
-    
-    this.clientMaintenanceInterval = setInterval(() => {
-      const now = Date.now();
-      for (const [client, meta] of this.clientMetadata) {
-        if (meta.writeFailures > 0) {
-          meta.writeFailures = Math.floor(meta.writeFailures * 0.5);
-        }
-        if (meta.isPaused && (now - meta.pausedAt) > 5000) {
-          meta.isPaused = false;
-          meta.pausedAt = null;
-        }
-      }
-    }, 10000);
-  }
-  
-  startPersistentEncoder() {
-    if (this.isShuttingDown) return;
-    if (this.isEncoderRunning) {
-      console.log('🔧 Persistent encoder already running');
-      return;
-    }
-    
-    console.log('🚀 Starting persistent FFmpeg encoder (NEVER STOPS)...');
-    
-    this.pcmInputStream = new PassThrough({ highWaterMark: 128 * 1024 });
-    
-    this.persistentEncoder = spawn(getFFmpegPath(), [
-      '-threads', '1',
-      '-f', 's16le',
-      '-ar', '44100',
-      '-ac', '2',
-      '-i', 'pipe:0',
-      '-c:a', 'libmp3lame',
-      '-b:a', audioBitrate,
-      '-compression_level', '0',
-      '-flush_packets', '1',
-      '-write_xing', '0',
-      '-id3v2_version', '0',
-      '-f', 'mp3',
-      'pipe:1'
-    ], {
-      stdio: ['pipe', 'pipe', 'pipe']
-    });
-    
-    this.persistentEncoder.stdout.on('data', (chunk) => {
-      this.broadcast(chunk);
-    });
-    
-    this.persistentEncoder.stderr.on('data', (data) => {
-      const msg = data.toString();
-      if (msg.includes('Error') || msg.includes('error')) {
-        console.error('FFmpeg encoder:', msg.trim());
-      }
-    });
-    
-    this.persistentEncoder.on('error', (err) => {
-      console.error('❌ Persistent encoder error:', err.message);
-      this.isEncoderRunning = false;
-      if (!this.isShuttingDown) this.restartEncoder();
-    });
-    
-    this.persistentEncoder.on('close', (code) => {
-      this.isEncoderRunning = false;
-      if (this.isShuttingDown) return;
-      console.error(`⚠️ Persistent encoder closed with code ${code} - RESTARTING`);
-      this.restartEncoder();
-    });
-    
-    this.pcmInputStream.pipe(this.persistentEncoder.stdin);
-    
-    this.isEncoderRunning = true;
-    this.restartAttempts = 0;
-    console.log('✅ Persistent FFmpeg encoder started - will never stop');
-    
-    this.startSilenceFeed();
-  }
-  
-  restartEncoder() {
-    if (this.isShuttingDown || this.isEncoderRunning || this.restartTimeout) return;
-    
-    this.restartAttempts = (this.restartAttempts || 0) + 1;
-    const delay = Math.min(1000 * Math.pow(1.5, Math.min(this.restartAttempts - 1, 6)), 15000);
-    
-    console.log(`🔄 Restarting persistent encoder in ${(delay / 1000).toFixed(1)}s (attempt ${this.restartAttempts})...`);
-    this.restartTimeout = setTimeout(() => {
-      this.restartTimeout = null;
-      this.startPersistentEncoder();
-    }, delay);
-  }
-  
+  const queryToken = (req.query.token || req.query.auth || '').trim();
+  if (queryToken && timingSafeCompare(queryToken, ADMIN_PASSWORD)) return next();
 
-  loadTransitionTrack() {
+  res.status(401).json({ error: 'Unauthorized' });
+};
+
+// ==========================================
+// 🏨 MULTI-ROOM AUDIO & QUEUE CONFIGURATION
+// ==========================================
+const ROOMS_CONFIG = {
+  room1: {
+    id: 'room1',
+    name: 'Room 1 (Main Lounge)',
+    highriseRoomId: (process.env.ROOM_ID || process.env.HIGHRISE_ROOM_ID || '6a9206666490d93ec3fffdeb').toLowerCase().trim(),
+    audioServerUrl: (process.env.AUDIO_SERVER_URL || 'http://92.118.206.166:30238').replace(/\/+$/, ''),
+    secret: process.env.AUDIO_SECRET || 'supersecret_audio_key_123'
+  },
+  room2: {
+    id: 'room2',
+    name: 'Room 2 (Party Room)',
+    highriseRoomId: (process.env.ROOM_ID_ROOM2 || process.env.HIGHRISE_ROOM_ID_ROOM2 || '6a9865186e9936ccdd6bd143').toLowerCase().trim(),
+    audioServerUrl: (process.env.AUDIO_SERVER_URL_ROOM2 || 'http://2.56.246.128:30289').replace(/\/+$/, ''),
+    secret: process.env.AUDIO_SECRET_ROOM2 || process.env.AUDIO_SECRET || 'supersecret_audio_key_123'
+  }
+};
+
+class RoomState {
+  constructor(config) {
+    this.id = config.id;
+    this.name = config.name;
+    this.highriseRoomId = config.highriseRoomId || '';
+    this.audioServerUrl = config.audioServerUrl;
+    this.secret = config.secret;
+    this.queue = [];
+    this.currentTrack = null;
+    this.isPlaying = false;
+    this.isPreparing = false;
+    this.currentVolume = 100;
+    this.history = [];
+    this.announcementsEnabled = true;
+    this.announcementVoice = 'en';
+    this.currentPlaybackSession = 0;
+    this.consecutiveIdleChecks = 0;
+    this.loadState();
+  }
+
+  get queueFile() {
+    return path.join(CACHE_DIR, `queue_state_${this.id}.json`);
+  }
+  get playbackFile() {
+    return path.join(CACHE_DIR, `playback_state_${this.id}.json`);
+  }
+
+  loadState() {
     try {
-      const pcmPath = path.join(__dirname, 'assets', 'transition.pcm');
-      const m4aPath = path.join(__dirname, 'assets', 'transition.m4a');
-
-      if (!fs.existsSync(pcmPath) && fs.existsSync(m4aPath)) {
-        console.log('🔄 [TransitionEngine] Generating transition.pcm from assets/transition.m4a...');
-        try {
-          execSync(`"${getFFmpegPath()}" -y -i "${m4aPath}" -f s16le -ar 44100 -ac 2 "${pcmPath}"`, { stdio: 'ignore' });
-        } catch (convErr) {
-          console.warn('⚠️ [TransitionEngine] ffmpeg audio conversion warning:', convErr.message);
-        }
+      let qFile = this.queueFile;
+      if (this.id === 'room1' && !fs.existsSync(qFile) && fs.existsSync(path.join(CACHE_DIR, 'queue_state.json'))) {
+        qFile = path.join(CACHE_DIR, 'queue_state.json');
       }
-
-      if (fs.existsSync(pcmPath)) {
-        const raw = fs.readFileSync(pcmPath);
-        const chunkSize = 8820; // 50ms aligned chunk
-        const alignedLen = raw.length - (raw.length % chunkSize);
-        this.transitionPcm = Buffer.allocUnsafe(alignedLen);
-        raw.copy(this.transitionPcm, 0, 0, alignedLen);
-        this.transitionOffset = 0;
-        console.log(`☕ [TransitionEngine] Loaded seamless transition music loop (${(this.transitionPcm.length / 1024 / 1024).toFixed(2)} MB, ~${(this.transitionPcm.length / 176400).toFixed(1)}s)`);
-      } else {
-        console.warn('⚠️ [TransitionEngine] No transition track found at assets/transition.m4a');
+      if (fs.existsSync(qFile)) {
+        this.queue = (JSON.parse(fs.readFileSync(qFile, 'utf8')) || []).filter(item => !item?.isAutoplay);
       }
-    } catch (e) {
-      console.error('⚠️ [TransitionEngine] Error loading transition track:', e.message);
-      this.transitionPcm = null;
-    }
-  }
-
-  generateSilencePCM(durationMs = 100) {
-    if (durationMs === 50) return SILENCE_50MS_PCM;
-    if (durationMs === 300) return SILENCE_300MS_PCM;
-    const sampleRate = 44100;
-    const channels = 2;
-    const bytesPerSample = 2;
-    const numSamples = Math.floor((sampleRate * durationMs) / 1000);
-    const bufferSize = numSamples * channels * bytesPerSample;
-    return Buffer.alloc(bufferSize, 0);
-  }
-  
-  startSilenceFeed() {
-    if (this.silenceInterval) return;
-    
-    this.isSendingSilence = true;
-    this.silenceStartTime = Date.now();
-    this.silenceSentMs = 0;
-    console.log(this.transitionPcm ? '☕ Starting transition music loop to keep stream alive...' : '🔇 Starting silence feed to keep encoder alive...');
-    
-    const CHUNK_MS = 50;
-    const CHUNK_SIZE = 8820;
-    const silenceZeroChunk = this.generateSilencePCM(CHUNK_MS);
-    
-    this.silenceInterval = setInterval(() => {
-      if (!this.isSendingSilence || !this.pcmInputStream || this.pcmInputStream.destroyed) {
-        return;
+      let pFile = this.playbackFile;
+      if (this.id === 'room1' && !fs.existsSync(pFile) && fs.existsSync(path.join(CACHE_DIR, 'playback_state.json'))) {
+        pFile = path.join(CACHE_DIR, 'playback_state.json');
       }
-      
-      const elapsedMs = Date.now() - this.silenceStartTime;
-      // Clock-corrected pacing: maintain a 250ms lead cushion ahead of wall-clock time
-      // Prevents client buffer starvation and eliminates disconnection between tracks
-      while (this.silenceSentMs - elapsedMs < 250) {
-        let chunk = silenceZeroChunk;
-        // Play transition track during track transitions (up to 45s), then rest on zero-CPU silence when idle
-        if (this.transitionPcm && this.transitionPcm.length >= CHUNK_SIZE && this.silenceSentMs < 45000) {
-          chunk = this.transitionPcm.subarray(this.transitionOffset, this.transitionOffset + CHUNK_SIZE);
-          this.transitionOffset += CHUNK_SIZE;
-          if (this.transitionOffset >= this.transitionPcm.length) {
-            this.transitionOffset = 0; // Seamless loop wrap-around
-          }
-        }
-        try {
-          this.pcmInputStream.write(chunk);
-          this.silenceSentMs += CHUNK_MS;
-        } catch (err) {
-          break;
-        }
-      }
-    }, 50);
-  }
-  
-  stopSilenceFeed() {
-    this.isSendingSilence = false;
-    console.log(this.transitionPcm ? '🔊 Stopped transition music - real audio playing' : '🔊 Stopped silence feed - real audio playing');
-  }
-  
-  resumeSilenceFeed() {
-    this.isSendingSilence = true;
-    this.silenceStartTime = Date.now();
-    this.silenceSentMs = 0;
-    console.log(this.transitionPcm ? '☕ Resuming transition music loop...' : '🔇 Resuming silence feed...');
-  }
-  
-  injectTransitionSilence() {
-    if (!this.pcmInputStream || this.pcmInputStream.destroyed) return;
-    
-    console.log(`🔇 Injecting ${this.transitionSilenceMs}ms transition silence...`);
-    const silenceBuffer = this.generateSilencePCM(this.transitionSilenceMs);
-    
-    try {
-      this.pcmInputStream.write(silenceBuffer);
-    } catch (err) {
-      console.error('Failed to inject transition silence:', err.message);
-    }
-  }
-  
-  feedPCMAudio(pcmChunk) {
-    if (!this.pcmInputStream || this.pcmInputStream.destroyed) {
-      console.error('⚠️ PCM input stream not available');
-      return false;
-    }
-    
-    if (this.isSendingSilence) {
-      this.stopSilenceFeed();
-    }
-    
-    try {
-      return this.pcmInputStream.write(pcmChunk);
-    } catch (err) {
-      console.error('Error feeding PCM audio:', err.message);
-      return false;
-    }
-  }
-
-  async feedPCMAudioRealtime(pcmBuffer) {
-    if (!pcmBuffer || pcmBuffer.length === 0) return true;
-    if (!this.pcmInputStream || this.pcmInputStream.destroyed) {
-      console.error('⚠️ PCM input stream not available');
-      return false;
-    }
-
-    if (this.isSendingSilence) {
-      this.stopSilenceFeed();
-    }
-
-    const TARGET_LEAD_MS = 250; // 250ms lead cushion prevents burst while maintaining real-time playback
-    const chunkSize = 8820; // 50ms of 44.1kHz 16-bit stereo PCM
-    let offset = 0;
-    const startTime = Date.now();
-
-    while (offset < pcmBuffer.length) {
-      if (!this.pcmInputStream || this.pcmInputStream.destroyed) break;
-      const end = Math.min(offset + chunkSize, pcmBuffer.length);
-      const chunk = pcmBuffer.slice(offset, end);
-      try {
-        this.pcmInputStream.write(chunk);
-      } catch (err) {
-        console.error('Error writing realtime PCM chunk:', err.message);
-        break;
-      }
-      offset = end;
-
-      // Maintain an exact 250ms lead cushion ahead of wall-clock real time
-      const audioDurationSentMs = (offset / 176400) * 1000;
-      const realTimeElapsedMs = Date.now() - startTime;
-      const leadMs = audioDurationSentMs - realTimeElapsedMs;
-
-      if (leadMs > TARGET_LEAD_MS) {
-        const sleepMs = leadMs - TARGET_LEAD_MS;
-        await new Promise(r => setTimeout(r, sleepMs));
-      }
-    }
-
-    // Await the remaining lead audio so the announcement finishes naturally in real-time
-    const totalDurationMs = (pcmBuffer.length / 176400) * 1000;
-    const remainingMs = Math.max(0, totalDurationMs - (Date.now() - startTime));
-    if (remainingMs > 0) {
-      await new Promise(r => setTimeout(r, remainingMs));
-    }
-
-    return true;
-  }
-  
-  isAtClientLimit() {
-    if (this.clients.size >= this.maxClients) {
-      for (const client of this.clients) {
-        if (client.destroyed || client.writableEnded) {
-          this.removeClient(client);
-        }
-      }
-    }
-    return this.clients.size >= this.maxClients;
-  }
-
-  addClient(res, req) {
-    if (this.isAtClientLimit()) {
-      try {
-        if (!res.headersSent) res.status(503);
-        res.end('Stream capacity reached');
-      } catch (_) {}
-      return false;
-    }
-
-    const now = Date.now();
-    
-    const clientInfo = {
-      addedAt: now,
-      bytesWritten: 0,
-      writeFailures: 0,
-      lastWrite: now,
-      lastSuccessfulWrite: now,
-      isPaused: false,
-      pausedAt: null,
-      clientId: `${now}-${Math.random().toString(36).substr(2, 9)}`
-    };
-    
-    this.clients.add(res);
-    this.clientMetadata.set(res, clientInfo);
-    this.stats.totalConnections++;
-    
-    if (this.clients.size > this.stats.peakListeners) {
-      this.stats.peakListeners = this.clients.size;
-    }
-    
-    if (this.audioBuffer.length > 0) {
-      try {
-        const startIdx = Math.max(0, this.audioBuffer.length - this.instantStartChunks);
-        const burstChunks = this.audioBuffer.slice(startIdx);
-        if (burstChunks.length > 0) {
-          const burstData = Buffer.concat(burstChunks);
-          res.write(burstData);
-          clientInfo.bytesWritten += burstData.length;
-        }
-      } catch (err) {
-      }
-    }
-    
-    let cleanupCalled = false;
-    const cleanup = () => {
-      if (cleanupCalled) return;
-      cleanupCalled = true;
-      setTimeout(() => {
-        this.removeClient(res);
-      }, 100);
-    };
-    
-    req.on('close', cleanup);
-    req.on('aborted', cleanup);
-    res.on('error', cleanup);
-    res.on('close', cleanup);
-    
-    res.on('drain', () => {
-      const meta = this.clientMetadata.get(res);
-      if (meta) {
-        meta.isPaused = false;
-        meta.pausedAt = null;
-        meta.lastSuccessfulWrite = Date.now();
-      }
-    });
-    
-    console.log(`📻 Client connected (${this.clients.size} total, ID: ${clientInfo.clientId})`);
-  }
-  
-  removeClient(res) {
-    if (this.clients.has(res)) {
-      const meta = this.clientMetadata.get(res);
-      const clientId = meta?.clientId || 'unknown';
-      
-      this.clients.delete(res);
-      this.clientMetadata.delete(res);
-      
-      console.log(`📻 Client disconnected (${this.clients.size} remaining, ID: ${clientId})`);
-    }
-  }
-  
-  broadcast(chunk) {
-    this.audioBuffer.push(chunk);
-    if (this.audioBuffer.length > this.maxBufferSize) {
-      this.audioBuffer.shift();
-    }
-    
-    if (this.clients.size === 0) return;
-    
-    this.stats.totalBytes += chunk.length;
-    const clientsToRemove = [];
-    const now = Date.now();
-    
-    for (const client of this.clients) {
-      const meta = this.clientMetadata.get(client);
-      if (!meta) continue;
-      
-      // Zombie client check: 45 seconds of no activity
-      const timeSinceLastSuccess = now - meta.lastSuccessfulWrite;
-      if (timeSinceLastSuccess > 45000) {
-        console.log(`⚠️ Dropping unresponsive client after ${Math.floor(timeSinceLastSuccess/1000)}s`);
-        clientsToRemove.push(client);
-        this.stats.droppedClients++;
-        continue;
-      }
-
-      // Real-time audio backpressure throttling:
-      // If a client's TCP socket buffer has accumulated > 64KB (~3.5s of audio),
-      // skip sending new chunks until its buffer drains.
-      // This absorbs network jitters without dropping the connection or causing reconnection storms!
-      if (client.writableLength > 64 * 1024) {
-        if (!meta.isPaused) {
-          meta.isPaused = true;
-          meta.pausedAt = now;
-        }
-        // Only drop if client has been completely unresponsive / frozen for over 35 seconds
-        if (now - meta.lastSuccessfulWrite > 35000) {
-          console.log(`⚠️ Dropping unresponsive client after 35s stall (${Math.floor(client.writableLength / 1024)} KB queued)`);
-          clientsToRemove.push(client);
-          this.stats.droppedClients++;
-        }
-        continue;
-      }
-      
-      try {
-        const canWrite = client.write(chunk);
-        meta.lastWrite = now;
-        if (canWrite) {
-          meta.lastSuccessfulWrite = now;
-        }
-        meta.bytesWritten += chunk.length;
-      } catch (err) {
-        if (err.code === 'ERR_STREAM_DESTROYED' || err.code === 'EPIPE' || err.code === 'ECONNRESET') {
-          clientsToRemove.push(client);
-        }
-      }
-    }
-    
-    for (const client of clientsToRemove) {
-      this.removeClient(client);
-      try {
-        client.end();
-      } catch (e) {}
-    }
-  }
-  
-  getStats() {
-    const uptime = (Date.now() - this.stats.startTime) / 1000;
-    const bytesPerSecond = uptime > 0 ? this.stats.totalBytes / uptime : 0;
-    
-    let pausedClients = 0;
-    for (const [, meta] of this.clientMetadata) {
-      if (meta.isPaused) pausedClients++;
-    }
-    
-    return {
-      activeListeners: this.clients.size,
-      pausedListeners: pausedClients,
-      peakListeners: this.stats.peakListeners,
-      totalConnections: this.stats.totalConnections,
-      totalBytesSent: this.stats.totalBytes,
-      droppedClients: this.stats.droppedClients,
-      bytesPerSecond: Math.round(bytesPerSecond),
-      uptimeSeconds: Math.round(uptime),
-      bufferSize: this.audioBuffer.length,
-      isSendingSilence: this.isSendingSilence,
-      encoderRunning: this.isEncoderRunning
-    };
-  }
-  
-  getHealthStatus() {
-    return {
-      encoderPID: this.persistentEncoder?.pid || null,
-      encoderAlive: Boolean(
-        this.persistentEncoder &&
-        !this.persistentEncoder.killed &&
-        this.persistentEncoder.exitCode === null &&
-        this.isEncoderRunning
-      ),
-      isEncoderRunning: this.isEncoderRunning,
-      clientCount: this.clients.size,
-      maxClients: this.maxClients,
-      isSendingSilence: this.isSendingSilence
-    };
-  }
-  
-  shutdown() {
-    this.isShuttingDown = true;
-    this.isSendingSilence = false;
-    if (this.silenceInterval) {
-      clearInterval(this.silenceInterval);
-      this.silenceInterval = null;
-    }
-    if (this.restartTimeout) {
-      clearTimeout(this.restartTimeout);
-      this.restartTimeout = null;
-    }
-    if (this.clientMaintenanceInterval) {
-      clearInterval(this.clientMaintenanceInterval);
-      this.clientMaintenanceInterval = null;
-    }
-    this.isEncoderRunning = false;
-    if (this.pcmInputStream && !this.pcmInputStream.destroyed) {
-      try { this.pcmInputStream.destroy(); } catch (_) {}
-    }
-    if (this.persistentEncoder) {
-      try {
-        if (this.persistentEncoder.stdin && !this.persistentEncoder.stdin.destroyed) {
-          this.persistentEncoder.stdin.destroy();
-        }
-        if (this.persistentEncoder.stdout && !this.persistentEncoder.stdout.destroyed) {
-          this.persistentEncoder.stdout.destroy();
-        }
-        if (this.persistentEncoder.stderr && !this.persistentEncoder.stderr.destroyed) {
-          this.persistentEncoder.stderr.destroy();
-        }
-        if (!this.persistentEncoder.killed) {
-          this.persistentEncoder.kill('SIGKILL');
-        }
-      } catch (_) {}
-      this.persistentEncoder = null;
-    }
-    for (const client of this.clients) {
-      try {
-        client.end();
-        if (typeof client.destroy === 'function') client.destroy();
-      } catch (_) {}
-    }
-    this.clients.clear();
-    this.clientMetadata.clear();
-  }
-
-  clear() {
-    this.clients.clear();
-    this.clientMetadata.clear();
-  }
-  
-  clearAudioBuffer() {
-    const oldLength = this.audioBuffer.length;
-    this.audioBuffer = [];
-    console.log(`🧹 Audio buffer cleared (had ${oldLength} chunks)`);
-  }
-}
-
-function logError(functionName, error, additionalContext = {}) {
-  const timestamp = new Date().toISOString().replace('T', ' ').split('.')[0];
-  const errorType = error.name || 'Error';
-  const errorMessage = error.message || String(error);
-  const stack = error.stack || 'No stack trace available';
-  
-  let logEntry = `[${timestamp}] ============================================================\n`;
-  logEntry += `Function: ${functionName}\n`;
-  logEntry += `Error Type: ${errorType}\n`;
-  logEntry += `Error Message: ${errorMessage}\n`;
-  
-  if (Object.keys(additionalContext).length > 0) {
-    logEntry += `Additional Context: ${JSON.stringify(additionalContext, null, 2)}\n`;
-  }
-  
-  logEntry += `------------------------------------------------------------\n`;
-  logEntry += `Stack Trace:\n${stack}\n`;
-  logEntry += `============================================================\n\n`;
-  
-  try {
-    const logsDir = path.dirname(ERROR_LOG_FILE);
-    if (!fs.existsSync(logsDir)) {
-      fs.mkdirSync(logsDir, { recursive: true });
-    }
-    // Rotate log if it exceeds 2 MB to prevent unbounded disk growth
-    try {
-      const stat = fs.statSync(ERROR_LOG_FILE);
-      if (stat.size > 2 * 1024 * 1024) {
-        fs.renameSync(ERROR_LOG_FILE, ERROR_LOG_FILE + '.1');
+      if (fs.existsSync(pFile)) {
+        this.currentTrack = JSON.parse(fs.readFileSync(pFile, 'utf8')) || null;
       }
     } catch (_) {}
-    fs.appendFileSync(ERROR_LOG_FILE, logEntry, 'utf8');
-    console.error(`❌ Error logged to ${ERROR_LOG_FILE}: ${errorMessage}`);
-  } catch (writeError) {
-    console.error('Failed to write to error log:', writeError.message);
-    console.error('Original error:', errorMessage);
   }
-}
 
-const writeLocks = {};
-
-async function atomicWrite(filepath, data) {
-  while (writeLocks[filepath]) {
-    await new Promise(resolve => setTimeout(resolve, 10));
-  }
-  writeLocks[filepath] = true;
-  try {
-    const tempPath = filepath + '.tmp';
-    await fs.promises.writeFile(tempPath, data);
-    await fs.promises.rename(tempPath, filepath);
-  } finally {
-    writeLocks[filepath] = false;
-  }
-}
-
-let queue = [];
-let isPlaying = false;
-let currentTitle = "No music playing";
-let currentMetadata = null;
-let currentIsAutoplay = false;
-let currentYtdlp = null;
-let currentDecoder = null;
-let isTransitioning = false;
-let isPreparingTrack = false;
-let streamVersion = 0;
-let currentStreamId = 0;
-let lastSkipTime = 0;
-let currentStartTime = 0;
-let consecutiveZeroByteFailures = 0;
-
-try {
-  if (fs.existsSync(CACHE_DIR)) {
-    const staleFiles = fs.readdirSync(CACHE_DIR);
-    for (const f of staleFiles) {
-      if (f.endsWith('.tmp') || f.endsWith('.part') || f.endsWith('.ytdl') || (f.startsWith('track_') && f.endsWith('.m4a')) || f.startsWith('debug_')) {
-        try { fs.unlinkSync(path.join(CACHE_DIR, f)); } catch (e) {}
+  saveState() {
+    try {
+      fs.writeFileSync(this.queueFile, JSON.stringify(this.queue, null, 2));
+      fs.writeFileSync(this.playbackFile, JSON.stringify(this.currentTrack, null, 2));
+      if (this.id === 'room1') {
+        fs.writeFileSync(path.join(CACHE_DIR, 'queue_state.json'), JSON.stringify(this.queue, null, 2));
+        fs.writeFileSync(path.join(CACHE_DIR, 'playback_state.json'), JSON.stringify(this.currentTrack, null, 2));
       }
+    } catch (_) {}
+  }
+}
+
+const rooms = {};
+for (const [id, cfg] of Object.entries(ROOMS_CONFIG)) {
+  rooms[id] = new RoomState(cfg);
+}
+
+function getRoom(req) {
+  const rawId = (req?.query?.room || req?.body?.room || req?.headers?.['x-room-id'] || 'room1').toLowerCase().trim();
+  if (rooms[rawId]) return rooms[rawId];
+  for (const r of Object.values(rooms)) {
+    if (r.highriseRoomId && r.highriseRoomId === rawId) {
+      return r;
     }
   }
-  if (fs.existsSync(TTS_CACHE_DIR)) {
-    const legacyFiles = fs.readdirSync(TTS_CACHE_DIR);
-    for (const f of legacyFiles) {
-      try { fs.unlinkSync(path.join(TTS_CACHE_DIR, f)); } catch (e) {}
+  return rooms.room1;
+}
+
+const sseClients = new Set();
+
+function getDashboardState(room = rooms.room1, type = 'state', extra = {}) {
+  const targetRoom = (room && room.id && rooms[room.id]) ? room : rooms.room1;
+  const elapsed = targetRoom.isPlaying && targetRoom.currentTrack?.addedAt ? Math.max(0, Date.now() - targetRoom.currentTrack.addedAt) : 0;
+  const currentTitle = targetRoom.currentTrack?.metadata?.title || targetRoom.currentTrack?.title || 'No music playing';
+  const currentMetadata = targetRoom.currentTrack?.metadata || (targetRoom.currentTrack ? {
+    title: targetRoom.currentTrack.title,
+    artist: 'Unknown Artist',
+    duration: '0:00',
+    durationSeconds: 0,
+    thumbnail: ''
+  } : null);
+
+  const formattedQueue = targetRoom.queue.map((item, idx) => ({
+    position: idx + 1,
+    title: item.metadata?.title || item.title || 'Unknown Track',
+    metadata: item.metadata || {
+      title: item.title,
+      artist: 'Unknown Artist',
+      thumbnail: ''
+    }
+  }));
+
+  return {
+    roomId: targetRoom.id,
+    roomName: targetRoom.name,
+    type,
+    isPlaying: targetRoom.isPlaying,
+    isPreparing: targetRoom.isPreparing,
+    isTransitioning: false,
+    currentTitle,
+    currentMetadata,
+    currentTrack: targetRoom.currentTrack,
+    queue: formattedQueue,
+    startTime: targetRoom.currentTrack?.addedAt || 0,
+    serverElapsed: elapsed,
+    volume: targetRoom.currentVolume,
+    announcementsEnabled: targetRoom.announcementsEnabled,
+    health: {
+      encoderAlive: true,
+      isSilent: !targetRoom.isPlaying
+    },
+    stats: {
+      activeListeners: 1
+    },
+    ...extra
+  };
+}
+
+function broadcastEvent(roomOrType = rooms.room1, type = 'state', data = {}) {
+  let targetRoom = rooms.room1;
+  let eventType = type;
+  let eventData = data;
+
+  if (typeof roomOrType === 'string') {
+    eventType = roomOrType;
+    eventData = type && typeof type === 'object' ? type : data;
+    targetRoom = rooms.room1;
+  } else if (roomOrType && roomOrType.id) {
+    targetRoom = roomOrType;
+  }
+
+  const payload = `data: ${JSON.stringify(getDashboardState(targetRoom, eventType, eventData))}\n\n`;
+
+  for (const client of sseClients) {
+    if (!client._roomId || client._roomId === targetRoom.id) {
+      try { client.write(payload); } catch (_) { sseClients.delete(client); }
     }
   }
-} catch (e) {}
-let currentLocalFilePath = null;
+}
 
 // ==========================================
-// 🎵 CACHE BUDGET CONFIGURATION & LRU GUARDS
+// 📡 AUDIO SERVER INTEGRATION
 // ==========================================
-const MAX_CACHED_SONGS = parseInt(process.env.MAX_CACHED_SONGS, 10) || 60;
-const MAX_CACHE_SIZE_BYTES = (parseInt(process.env.MAX_CACHE_SIZE_MB, 10) || 400) * 1024 * 1024; // 400 MB total cache budget
-const MIN_KEPT_SONGS = 5; // Allow evicting down to 5 songs if individual files are huge
+async function callAudioServer(roomOrId, endpoint, body = {}, method = 'POST') {
+  let room = rooms.room1;
+  let actualEndpoint = endpoint;
+  let actualBody = body;
+  let actualMethod = method;
 
-const MAX_TTS_CACHE_BYTES = (parseInt(process.env.MAX_TTS_CACHE_MB, 10) || 25) * 1024 * 1024; // 25 MB max TTS PCM audio
-const MAX_TTS_FILES = parseInt(process.env.MAX_TTS_FILES, 10) || 20; // 20 announcements max
-const TTS_CACHE_TTL_MS = (parseInt(process.env.TTS_CACHE_TTL_HOURS, 10) || 6) * 60 * 60 * 1000; // 6 hours TTL
+  if (typeof roomOrId === 'string' && roomOrId.startsWith('/')) {
+    actualEndpoint = roomOrId;
+    actualBody = endpoint || {};
+    actualMethod = body || 'POST';
+    room = rooms.room1;
+  } else if (typeof roomOrId === 'string') {
+    room = rooms[roomOrId] || rooms.room1;
+  } else if (roomOrId && roomOrId.id && rooms[roomOrId.id]) {
+    room = roomOrId;
+  }
+
+  try {
+    const url = `${room.audioServerUrl}${actualEndpoint}`;
+    const timeoutMs = actualEndpoint === '/health' ? 3000
+                    : actualEndpoint === '/announce' ? 20000
+                    : 5000;
+    const opts = {
+      method: actualMethod,
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${room.secret}`
+      }
+    };
+    if (actualMethod !== 'GET') {
+      opts.body = JSON.stringify(actualBody);
+    }
+    const res = await fetch(url, opts);
+    return await res.json();
+  } catch (e) {
+    if (e.name === 'TimeoutError' || e.name === 'AbortError') {
+      console.warn(`⚠️ [AudioServerCall:${room.id}] Timeout calling ${actualEndpoint} (${e.name})`);
+    } else {
+      console.error(`❌ [AudioServerCall:${room.id}] Failed to call ${actualEndpoint}:`, e.message);
+    }
+    return { error: e.message };
+  }
+}
+
+// Clean title and artist for TTS announcement
+function cleanForTTS(title, artist) {
+  let cleanTitle = (title || 'Unknown Track')
+    .replace(/^(?:video\s*song|full\s*video|official\s*video|audio\s*song)\s*[-:]\s*/i, '')
+    .replace(/[#|/].*$/g, '')
+    .replace(/[\[\(].*?[\)\]]/g, '')
+    .replace(/\b(official|music video|official video|video song|full song|lyrics|hd|4k)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const titleWords = cleanTitle.split(/\s+/).slice(0, 6).join(' ');
+
+  let cleanArtist = (artist || 'Unknown Artist')
+    .replace(/[#|/].*$/g, '')
+    .replace(/\b(official|records|vevo|music|channel)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  const artistWords = cleanArtist.split(/\s+/).slice(0, 3).join(' ');
+
+  return { cleanTitle: titleWords, cleanArtist: artistWords };
+}
+
+// Clean query for worker's JioSaavn search
+function cleanQueryForWorker(title, artist) {
+  let cleanTitle = (title || 'music')
+    .replace(/^(?:video\s*song|full\s*video|official\s*video|audio\s*song)\s*[-:]\s*/i, '')
+    .replace(/[#|/].*$/g, '')
+    .replace(/[\[\(].*?[\)\]]/g, '')
+    .replace(/\b(official|music video|official video|video song|full song|lyrics|hd|4k|audio|lyrical)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  let cleanArtist = (artist || '')
+    .replace(/[#|/].*$/g, '')
+    .replace(/\b(official|records|vevo|music|channel)\b/gi, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  let query = cleanTitle;
+  if (cleanArtist && !cleanTitle.toLowerCase().includes(cleanArtist.toLowerCase())) {
+    query = `${cleanTitle} ${cleanArtist}`;
+  }
+
+  return query.split(/\s+/).slice(0, 8).join(' ').trim();
+}
 
 function getSongCacheKey(url, title = '') {
   const ytMatch = (url || '').match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/);
@@ -1626,2768 +805,1655 @@ function getSongCacheKey(url, title = '') {
   return `sc_${crypto.createHash('md5').update(normalized || 'unknown').digest('hex').slice(0, 16)}`;
 }
 
-// 🎙️ Auto-prune TTS cache: strict LRU, file count limit, and TTL expiration
-async function pruneTTSCache() {
+
+
+// ==========================================
+// ☁️ TELEGRAM CLOUD VAULT (Infinite Free L2 Storage)
+// ==========================================
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '9109239162:AAE01QXTy4LhP5o6MvJ7DUYL_4kzBbSp5k4';
+const TELEGRAM_VAULT_CHAT_ID = process.env.TELEGRAM_VAULT_CHAT_ID || '-1004463400168';
+const VAULT_FILE = path.join(CACHE_DIR, 'telegram_vault.json');
+const VAULT_BAK_FILE = path.join(CACHE_DIR, 'telegram_vault.json.bak');
+
+let telegramVault = {};
+try {
+  if (fs.existsSync(VAULT_FILE)) {
+    telegramVault = JSON.parse(fs.readFileSync(VAULT_FILE, 'utf8'));
+    console.log(`☁️ [TelegramVault] Loaded ${Object.keys(telegramVault).length} songs from vault index.`);
+  } else if (fs.existsSync(VAULT_BAK_FILE)) {
+    telegramVault = JSON.parse(fs.readFileSync(VAULT_BAK_FILE, 'utf8'));
+    console.log(`☁️ [TelegramVault] Primary missing, loaded ${Object.keys(telegramVault).length} songs from backup vault.`);
+  }
+} catch (loadErr) {
+  console.warn(`⚠️ [TelegramVault] Primary vault corrupt (${loadErr.message}), attempting backup recovery...`);
   try {
-    const directories = [CACHE_DIR, TTS_CACHE_DIR].filter(d => fs.existsSync(d));
-    const now = Date.now();
-    const ttsFiles = [];
-    let totalBytes = 0;
-
-    for (const dir of directories) {
-      const files = await fs.promises.readdir(dir);
-      for (const f of files) {
-        const isTtsPcm = dir === CACHE_DIR && f.startsWith('tts_') && f.endsWith('.pcm');
-        const isLegacyTts = dir === TTS_CACHE_DIR && (f.endsWith('.mp3') || f.endsWith('.pcm') || f.endsWith('.m4a'));
-        
-        if (isTtsPcm || isLegacyTts) {
-          const filePath = path.join(dir, f);
-          try {
-            const st = await fs.promises.stat(filePath);
-            // Delete any announcement audio older than TTL
-            if (now - st.mtimeMs > TTS_CACHE_TTL_MS) {
-              await fs.promises.unlink(filePath).catch(() => {});
-              continue;
-            }
-            ttsFiles.push({ name: f, path: filePath, size: st.size, mtime: st.mtimeMs });
-            totalBytes += st.size;
-          } catch (_) {}
-        }
-      }
+    if (fs.existsSync(VAULT_BAK_FILE)) {
+      telegramVault = JSON.parse(fs.readFileSync(VAULT_BAK_FILE, 'utf8'));
+      console.log(`✅ [TelegramVault] Successfully recovered ${Object.keys(telegramVault).length} songs from backup vault.`);
+    } else {
+      telegramVault = {};
     }
-
-    ttsFiles.sort((a, b) => a.mtime - b.mtime);
-
-    while ((ttsFiles.length > MAX_TTS_FILES || totalBytes > MAX_TTS_CACHE_BYTES) && ttsFiles.length > 0) {
-      const oldest = ttsFiles.shift();
-      try {
-        await fs.promises.unlink(oldest.path);
-        totalBytes -= oldest.size;
-        console.log(`🧹 [TTSCache] Evicted LRU announcement: ${oldest.name} (${(oldest.size / 1024).toFixed(1)} KB)`);
-      } catch (_) {}
-    }
-  } catch (e) {
-    console.warn(`[TTSCache] Notice: Prune failed: ${e.message}`);
+  } catch (_) {
+    telegramVault = {};
   }
 }
 
-// 🎵 Auto-prune persistent songs: strict LRU, max count, max size, with companion metadata cleanup
-async function pruneLRUSongCache() {
+function saveTelegramVault() {
   try {
-    if (!fs.existsSync(CACHE_DIR)) return;
-    const files = await fs.promises.readdir(CACHE_DIR);
-    const songFiles = [];
-    let totalBytes = 0;
-
-    for (const f of files) {
-      if (f.startsWith('song_') && f.endsWith('.m4a')) {
-        const filePath = path.join(CACHE_DIR, f);
-        try {
-          const st = await fs.promises.stat(filePath);
-          songFiles.push({ name: f, path: filePath, size: st.size, mtime: st.mtimeMs });
-          totalBytes += st.size;
-        } catch (_) {}
-      }
-    }
-
-    songFiles.sort((a, b) => a.mtime - b.mtime);
-
-    while ((songFiles.length > MAX_CACHED_SONGS || totalBytes > MAX_CACHE_SIZE_BYTES) && songFiles.length > MIN_KEPT_SONGS) {
-      const oldest = songFiles.shift();
+    const tempFile = `${VAULT_FILE}.tmp`;
+    const data = JSON.stringify(telegramVault, null, 2);
+    // Write atomically to temporary file first
+    fs.writeFileSync(tempFile, data, 'utf8');
+    // Maintain rolling backup of known valid state
+    if (fs.existsSync(VAULT_FILE)) {
       try {
-        await fs.promises.unlink(oldest.path);
-        totalBytes -= oldest.size;
-        const metaPath = oldest.path.replace(/\.m4a$/, '.json');
-        if (fs.existsSync(metaPath)) {
-          await fs.promises.unlink(metaPath).catch(() => {});
-        }
-        console.log(`🧹 [SongCache] Evicted LRU cached track: ${oldest.name} (${(oldest.size / 1024 / 1024).toFixed(2)} MB)`);
+        fs.copyFileSync(VAULT_FILE, VAULT_BAK_FILE);
       } catch (_) {}
     }
-  } catch (e) {
-    console.warn(`[SongCache] Notice: Song prune failed: ${e.message}`);
-  }
-}
-
-async function saveSongToPersistentCache(filePath, cacheKey, metadata, source = 'youtube') {
-  try {
-    if (!filePath || !fs.existsSync(filePath)) return;
-    const dest = path.join(CACHE_DIR, `song_${cacheKey}.m4a`);
-    if (filePath !== dest) {
-      await fs.promises.copyFile(filePath, dest);
-      console.log(`💾 [SongCache] Saved "${path.basename(dest)}" to persistent cache for 0s instant replay!`);
-    }
-    if (metadata && (metadata.title || metadata.artist)) {
-      const jsonDest = path.join(CACHE_DIR, `song_${cacheKey}.json`);
-      const metaToSave = {
-        title: metadata.title || 'Unknown Track',
-        artist: metadata.artist || 'Unknown Artist',
-        duration: metadata.duration || '',
-        durationSeconds: metadata.durationSeconds || 0,
-        videoId: metadata.videoId || null,
-        source: source
-      };
-      await fs.promises.writeFile(jsonDest, JSON.stringify(metaToSave, null, 2), 'utf8').catch(() => {});
-    }
-    await pruneLRUSongCache();
+    // Atomic rename replaces target instantly
+    fs.renameSync(tempFile, VAULT_FILE);
   } catch (err) {
-    console.warn(`[SongCache] Notice: Could not cache song: ${err.message}`);
+    console.error('Failed to save telegram vault:', err.message);
   }
 }
 
-// 🎵 SMART TITLE & ARTIST PARSER
-class SmartTitleParser {
-  static clean(rawTitle = '', rawArtist = '') {
-    if (!rawTitle) return { title: 'Unknown Track', artist: rawArtist || 'Unknown Artist' };
-
-    let text = rawTitle;
-    let explicitArtist = null;
-
-    let cleanRawArtist = (rawArtist || '')
-      .replace(/ - Topic$/i, '')
-      .replace(/VEVO$/i, '')
-      .replace(/Official Channel/i, '')
-      .trim();
-
-    // 1. Cut off secondary SEO pipes / slashes
-    if (text.includes('|')) text = text.split('|')[0].trim();
-    if (text.includes('//')) text = text.split('//')[0].trim();
-
-    // 2. Remove bracketed / parenthesized noise
-    text = text.replace(/[\[\(].*?(official|video|audio|lyrics|music|remix|hd|4k|mv|visualizer|prod\.|produced).*?[\)\]]/gi, '');
-    text = text.replace(/[\[\(].*?[\)\]]/g, '');
-
-    // 3. Remove descriptor prefixes & hashtags
-    text = text.replace(/^(?:video\s*song|full\s*video(?:\s*song)?|official\s*video|audio\s*song|full\s*song|lyric\s*video)\s*[-:]\s*/i, '');
-    text = text.replace(/#\w+/g, '');
-
-    // 4. Remove marketing buzzwords & years
-    text = text.replace(/\b(official|music video|official video|lyric video|full song|new song|video song|hd|4k)\b/gi, '');
-    text = text.replace(/\b(202[0-9]|201[0-9])\b/g, '');
-
-    let parsedArtist = explicitArtist || cleanRawArtist;
-    let parsedTitle = text.trim();
-
-    // 5. Handle "Artist - Title" splitting
-    if (text.includes(' - ')) {
-      const parts = text.split(' - ').map(s => s.trim()).filter(Boolean);
-      if (parts.length >= 2) {
-        parsedArtist = parts[0];
-        parsedTitle = parts[1];
-      }
-    }
-
-    parsedArtist = parsedArtist.replace(/\b(records|record label|entertainment|films|studios|music)\b/gi, '').trim();
-    parsedTitle = parsedTitle.replace(/[^a-zA-Z0-9\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-    parsedArtist = parsedArtist.replace(/[^a-zA-Z0-9\s'-]/g, ' ').replace(/\s+/g, ' ').trim();
-
-    parsedTitle = parsedTitle.split(' ').slice(0, 5).join(' ');
-    parsedArtist = parsedArtist.split(' ').slice(0, 3).join(' ');
-
-    return {
-      title: parsedTitle || rawTitle,
-      artist: parsedArtist || rawArtist
-    };
-  }
-}
-
-function getRandomCachedSong() {
+async function getTelegramDirectFileUrl(fileId) {
   try {
-    if (!fs.existsSync(CACHE_DIR)) return null;
-    const files = fs.readdirSync(CACHE_DIR).filter(f => f.startsWith('song_') && f.endsWith('.m4a'));
-    if (!files.length) return null;
-    const validSongs = [];
-    for (const f of files) {
-      const full = path.join(CACHE_DIR, f);
-      try {
-        if (fs.statSync(full).size > 50000) validSongs.push(full);
-      } catch (_) {}
-    }
-    if (!validSongs.length) return null;
-    return validSongs[Math.floor(Math.random() * validSongs.length)];
-  } catch (_) {
-    return null;
-  }
-}
-
-function getCachedSongMetadata(filePath) {
-  try {
-    if (!filePath) return {};
-    const jsonPath = filePath.replace(/\.m4a$/i, '.json');
-    if (fs.existsSync(jsonPath)) {
-      const raw = fs.readFileSync(jsonPath, 'utf8');
-      const data = JSON.parse(raw);
-      if (data && (data.title || data.artist)) return data;
-    }
-  } catch (_) {}
-
-  try {
-    const base = path.basename(filePath, path.extname(filePath));
-    const cleanName = base.replace(/^song_/, '').replace(/^sc_/, '').replace(/^yt_/, '');
-    const parsed = SmartTitleParser.clean(cleanName, 'Highrise Favorites');
-    return {
-      title: parsed.title || cleanName,
-      artist: parsed.artist || 'Highrise Radio'
-    };
-  } catch (_) {
-    return { title: 'Highrise Favorite', artist: 'Highrise Radio' };
-  }
-}
-
-async function sendRoomNotification(text) {
-  try {
-    await fetch('http://127.0.0.1:5001/api/say', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-IPC-Secret': process.env.IPC_SECRET
-      },
-      body: JSON.stringify({ message: text }),
-      signal: AbortSignal.timeout(3000)
+    const res = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getFile?file_id=${fileId}`, {
+      signal: AbortSignal.timeout(10000)
     });
-  } catch (_) {}
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (data.ok && data.result?.file_path) {
+      return `https://api.telegram.org/file/bot${TELEGRAM_BOT_TOKEN}/${data.result.file_path}`;
+    }
+  } catch (e) {
+    console.warn(`[TelegramVault] getFile error:`, e.message);
+  }
+  return null;
 }
 
-let isBridgeHealthy = false;
-let lastBridgeHealthCheck = 0;
+function uploadToTelegramVaultBackground(filePath, cacheKey, title, artist, duration, force = false) {
+  if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_VAULT_CHAT_ID) return;
+  if (!fs.existsSync(filePath)) return;
 
-async function checkBridgeHealth() {
-  const healthy = await bridgePoolManager.checkPoolHealth();
-  isBridgeHealthy = healthy;
-  residentialBridgeUrl = bridgePoolManager.getPrimaryBridge()?.url || null;
-  return healthy;
-}
-
-
-// 🧹 Auto-prune cache directory asynchronously to prevent Linux page-cache and disk bloat (cgroup OOM prevention)
-function pruneStaleCacheFiles(keepFile = null) {
   setImmediate(async () => {
     try {
-      if (!fs.existsSync(CACHE_DIR)) return;
-      const files = await fs.promises.readdir(CACHE_DIR);
-      const keepBasename = keepFile ? path.basename(keepFile) : null;
-      let prunedCount = 0;
-      for (const f of files) {
-        const filePath = path.join(CACHE_DIR, f);
-        const isStaleTrack = f.startsWith('track_') && f.endsWith('.m4a') && f !== keepBasename;
-        const isTempFile = f.endsWith('.part') || f.endsWith('.ytdl') || f.endsWith('.tmp') || f.includes('.temp.');
-        const isDebugAudio = f.startsWith('debug_') && f.endsWith('.m4a');
-        
-        if (isStaleTrack || isTempFile || isDebugAudio) {
+      if (!force && telegramVault[cacheKey] && telegramVault[cacheKey].fileId) return;
+
+      const oldMessageId = telegramVault[cacheKey]?.messageId;
+      const stats = fs.statSync(filePath);
+      if (stats.size < 50000 || stats.size > 20 * 1024 * 1024) return;
+
+      const fileBuf = await fs.promises.readFile(filePath);
+      const blob = new Blob([fileBuf], { type: 'audio/mpeg' });
+      const form = new FormData();
+      form.append('chat_id', TELEGRAM_VAULT_CHAT_ID);
+      form.append('audio', blob, `${cacheKey}.mp3`);
+      form.append('title', (title || 'Track').slice(0, 60));
+      form.append('performer', (artist || 'Artist').slice(0, 60));
+      form.append('caption', `🎵 ${title} - ${artist}`);
+
+      const uploadRes = await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendAudio`, {
+        method: 'POST',
+        body: form,
+        signal: AbortSignal.timeout(45000)
+      });
+
+      if (!uploadRes.ok) throw new Error(`Telegram HTTP ${uploadRes.status}`);
+
+      const data = await uploadRes.json();
+      if (data.ok && data.result?.audio?.file_id) {
+        const fileId = data.result.audio.file_id;
+        const newMessageId = data.result.message_id;
+
+        telegramVault[cacheKey] = {
+          fileId,
+          messageId: newMessageId,
+          title: title || '',
+          artist: artist || '',
+          duration: duration || 0,
+          fileSize: stats.size,
+          savedAt: Date.now()
+        };
+        saveTelegramVault();
+        console.log(`☁️ [TelegramVault] 🚀 Uploaded & Saved to Vault: "${title}" (file_id: ${fileId.slice(0, 16)}..., msg: ${newMessageId})`);
+
+        // If replacing a faulty track and oldMessageId exists, delete old faulty copy from Telegram channel
+        if (oldMessageId && oldMessageId !== newMessageId) {
           try {
-            await fs.promises.unlink(filePath);
-            prunedCount++;
-          } catch (e) {}
-        } else if (f.startsWith('song_') && f.endsWith('.json')) {
-          const m4aPath = path.join(CACHE_DIR, f.replace(/\.json$/, '.m4a'));
-          if (!fs.existsSync(m4aPath)) {
-            try {
-              await fs.promises.unlink(filePath);
-              prunedCount++;
-            } catch (e) {}
+            await fetch(`https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/deleteMessage`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                chat_id: TELEGRAM_VAULT_CHAT_ID,
+                message_id: oldMessageId
+              }),
+              signal: AbortSignal.timeout(10000)
+            });
+            console.log(`☁️ [TelegramVault] 🗑️ Deleted old faulty copy (message_id: ${oldMessageId}) from Telegram Vault channel.`);
+          } catch (delErr) {
+            console.warn(`[TelegramVault] Note: could not delete old message ${oldMessageId}:`, delErr.message);
           }
         }
       }
-      if (prunedCount > 0) {
-        console.log(`🧹 [MemoryGuard] Pruned ${prunedCount} stale audio cache files from disk`);
-      }
-      await pruneTTSCache();
-      await pruneLRUSongCache();
-    } catch (e) {}
-  });
-}
-
-// 🛡️ Global Cache Disk Ceiling Guardian: enforces strict MAX_CACHE_SIZE_BYTES budget across directories
-async function enforceGlobalCacheLimit() {
-  try {
-    if (!fs.existsSync(CACHE_DIR)) return;
-    
-    // 1. Sweep stale temporary files and TTL-expired TTS
-    pruneStaleCacheFiles(currentLocalFilePath);
-    await pruneTTSCache();
-    await pruneLRUSongCache();
-
-    // 2. Measure total disk space across cache directories
-    const dirsToCheck = [CACHE_DIR, TTS_CACHE_DIR].filter(d => fs.existsSync(d));
-    let totalDirBytes = 0;
-    const allFiles = [];
-
-    for (const d of dirsToCheck) {
-      const files = await fs.promises.readdir(d);
-      for (const f of files) {
-        const full = path.join(d, f);
-        try {
-          const st = await fs.promises.stat(full);
-          if (st.isFile()) {
-            totalDirBytes += st.size;
-            allFiles.push({ path: full, name: f, size: st.size, mtime: st.mtimeMs, dir: d });
-          }
-        } catch (_) {}
-      }
-    }
-
-    const totalDirMb = (totalDirBytes / 1024 / 1024).toFixed(1);
-    const maxMb = (MAX_CACHE_SIZE_BYTES / 1024 / 1024).toFixed(0);
-
-    // If total cache exceeds budget, aggressively evict down to 80% of budget
-    if (totalDirBytes > MAX_CACHE_SIZE_BYTES) {
-      console.warn(`⚠️ [CacheGuardian] Disk cache (${totalDirMb} MB) exceeds budget (${maxMb} MB). Enforcing emergency eviction...`);
-      
-      const targetBytes = Math.floor(MAX_CACHE_SIZE_BYTES * 0.8);
-      
-      const evictable = allFiles.filter(item => {
-        if (currentLocalFilePath && item.path === currentLocalFilePath) return false;
-        if (item.name.includes('transition')) return false;
-        if (item.name === 'bridge_pool.json' || item.name === 'bridge_url.txt') return false;
-        return true;
-      });
-
-      // Priority sort: TTS / temp files first, then songs by oldest mtime
-      evictable.sort((a, b) => {
-        const aIsTtsOrTemp = a.name.startsWith('tts_') || a.name.includes('.temp.') || a.name.endsWith('.part');
-        const bIsTtsOrTemp = b.name.startsWith('tts_') || b.name.includes('.temp.') || b.name.endsWith('.part');
-        if (aIsTtsOrTemp && !bIsTtsOrTemp) return -1;
-        if (!aIsTtsOrTemp && bIsTtsOrTemp) return 1;
-        return a.mtime - b.mtime;
-      });
-
-      let evictedBytes = 0;
-      for (const file of evictable) {
-        if (totalDirBytes - evictedBytes <= targetBytes) break;
-        try {
-          await fs.promises.unlink(file.path);
-          evictedBytes += file.size;
-          if (file.name.startsWith('song_') && file.name.endsWith('.m4a')) {
-            const companionJson = file.path.replace(/\.m4a$/, '.json');
-            if (fs.existsSync(companionJson)) {
-              await fs.promises.unlink(companionJson).catch(() => {});
-            }
-          }
-          console.log(`🧹 [CacheGuardian] Evicted: ${file.name} (${(file.size / 1024 / 1024).toFixed(2)} MB)`);
-        } catch (_) {}
-      }
-
-      console.log(`✅ [CacheGuardian] Cache restored to ${((totalDirBytes - evictedBytes) / 1024 / 1024).toFixed(1)} MB (evicted ${(evictedBytes / 1024 / 1024).toFixed(1)} MB)`);
-    }
-  } catch (err) {
-    console.warn(`[CacheGuardian] Notice: Error in cache limit enforcement: ${err.message}`);
-  }
-}
-
-
-const streamManager = new PersistentStreamManager();
-
-const MAX_QUEUE_LENGTH = 200;
-
-function loadQueue() {
-  try {
-    if (fs.existsSync(QUEUE_FILE)) {
-      const data = fs.readFileSync(QUEUE_FILE, 'utf8');
-      const savedQueue = JSON.parse(data);
-      
-      if (!Array.isArray(savedQueue)) {
-        console.error('⚠️ Queue file corrupted: not an array, resetting to empty queue');
-        return [];
-      }
-      
-      const boundedQueue = savedQueue.slice(0, MAX_QUEUE_LENGTH);
-      console.log(`📂 Loaded ${boundedQueue.length} songs from saved queue`);
-      return boundedQueue;
-    }
-  } catch (err) {
-    console.error('⚠️ Failed to load queue:', err.message);
-    logError('loadQueue', err, { queueFile: QUEUE_FILE });
-  }
-  return [];
-}
-
-let saveQueueTimer = null;
-function saveQueue() {
-  if (saveQueueTimer) clearTimeout(saveQueueTimer);
-  saveQueueTimer = setTimeout(async () => {
-    saveQueueTimer = null;
-    try {
-      await atomicWrite(QUEUE_FILE, JSON.stringify(queue));
-      console.log(`💾 Queue saved (${queue.length} songs)`);
-      broadcastEvent();
     } catch (err) {
-      console.error('⚠️ Failed to save queue:', err.message);
-      logError('saveQueue', err, { queueLength: queue.length });
+      console.warn(`[TelegramVault] Background upload warning for "${title}":`, err.message);
     }
-  }, 100);
-}
-
-function loadPlaybackState() {
-  try {
-    if (fs.existsSync(PLAYBACK_STATE_FILE)) {
-      const data = fs.readFileSync(PLAYBACK_STATE_FILE, 'utf8');
-      const state = JSON.parse(data);
-      console.log(`📂 Loaded playback state (was playing: ${state.isPlaying})`);
-      return state;
-    }
-  } catch (err) {
-    console.error('⚠️ Failed to load playback state:', err.message);
-  }
-  return { isPlaying: false, currentTitle: null, currentMetadata: null };
-}
-
-let savePlaybackStateTimer = null;
-function savePlaybackState() {
-  if (savePlaybackStateTimer) clearTimeout(savePlaybackStateTimer);
-  savePlaybackStateTimer = setTimeout(async () => {
-    savePlaybackStateTimer = null;
-    try {
-      const state = {
-        isPlaying,
-        currentTitle,
-        currentMetadata,
-        currentIsAutoplay,
-        savedAt: Date.now()
-      };
-      await atomicWrite(PLAYBACK_STATE_FILE, JSON.stringify(state));
-      console.log(`💾 Playback state saved (playing: ${currentTitle})`);
-      broadcastEvent();
-    } catch (err) {
-      console.error('⚠️ Failed to save playback state:', err.message);
-    }
-  }, 100);
-}
-
-async function flushState() {
-  if (saveQueueTimer) {
-    clearTimeout(saveQueueTimer);
-    saveQueueTimer = null;
-  }
-  if (savePlaybackStateTimer) {
-    clearTimeout(savePlaybackStateTimer);
-    savePlaybackStateTimer = null;
-  }
-  try {
-    await atomicWrite(QUEUE_FILE, JSON.stringify(queue));
-  } catch (err) {
-    console.error('⚠️ Failed to flush queue state:', err.message);
-  }
-  try {
-    const state = {
-      isPlaying,
-      currentTitle,
-      currentMetadata,
-      currentIsAutoplay,
-      savedAt: Date.now()
-    };
-    await atomicWrite(PLAYBACK_STATE_FILE, JSON.stringify(state));
-  } catch (err) {
-    console.error('⚠️ Failed to flush playback state:', err.message);
-  }
-}
-
-const metadataCache = new Map();
-const CACHE_TTL = 1800000; // 30 minutes
-
-function getCached(key) {
-  const cached = metadataCache.get(key);
-  if (cached && (Date.now() - cached.timestamp < CACHE_TTL)) {
-    return cached.data;
-  }
-  return null;
-}
-
-function setCache(key, data) {
-  metadataCache.set(key, { data, timestamp: Date.now() });
-  if (metadataCache.size > 150) {
-    const keys = Array.from(metadataCache.keys());
-    for (let i = 0; i < 50; i++) metadataCache.delete(keys[i]);
-  }
-}
-
-async function ytsWithTimeout(arg, timeoutMs = 8000) {
-  let timer = null;
-  try {
-    return await Promise.race([
-      yts(arg),
-      new Promise((_, reject) => {
-        timer = setTimeout(() => reject(new Error(`yt-search timed out after ${timeoutMs}ms`)), timeoutMs);
-      })
-    ]);
-  } finally {
-    if (timer) clearTimeout(timer);
-  }
-}
-
-function parseTimestampToSeconds(ts) {
-  if (!ts || typeof ts !== "string") return 0;
-  const parts = ts.trim().split(":").map(Number);
-  if (parts.some(Number.isNaN)) return 0;
-  if (parts.length === 3) return parts[0] * 3600 + parts[1] * 60 + parts[2];
-  if (parts.length === 2) return parts[0] * 60 + parts[1];
-  if (parts.length === 1) return parts[0];
-  return 0;
-}
-
-async function searchYouTubeViaInnerTube(query, timeoutMs = 5000) {
-  const res = await fetch("https://www.youtube.com/youtubei/v1/search?prettyPrint=false", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", "User-Agent": "Mozilla/5.0" },
-    body: JSON.stringify({
-      context: { client: { clientName: "WEB", clientVersion: "2.20240724.00.00", hl: "en", gl: "US" } },
-      query: String(query)
-    }),
-    signal: AbortSignal.timeout(timeoutMs)
-  });
-  if (!res.ok) throw new Error(`InnerTube HTTP ${res.status}`);
-  const data = await res.json();
-  const contents = data?.contents?.twoColumnSearchResultsRenderer?.primaryContents?.sectionListRenderer?.contents || [];
-  for (const sec of contents) {
-    const items = sec?.itemSectionRenderer?.contents || [];
-    for (const it of items) {
-      const v = it?.videoRenderer;
-      if (v && v.videoId) {
-        const title = v.title?.runs?.map(r => r.text).join("") || "Unknown Track";
-        const artist = v.ownerText?.runs?.[0]?.text || v.longBylineText?.runs?.[0]?.text || "Unknown Artist";
-        const duration = v.lengthText?.simpleText || "Unknown";
-        const durationSeconds = parseTimestampToSeconds(duration);
-        const thumbs = v.thumbnail?.thumbnails || [];
-        const thumbnail = thumbs.length > 0 ? thumbs[thumbs.length - 1].url : "";
-        return {
-          url: `https://youtube.com/watch?v=${v.videoId}`,
-          title,
-          artist,
-          duration,
-          durationSeconds,
-          views: v.viewCountText?.simpleText || "0",
-          thumbnail,
-          ago: v.publishedTimeText?.simpleText || "",
-          videoId: v.videoId
-        };
-      }
-    }
-  }
-  return null;
-}
-
-async function searchYouTube(query) {
-  const cacheKey = `search:${query}`;
-  const cached = getCached(cacheKey);
-  if (cached) return cached;
-
-  // Primary: fast YouTube InnerTube API (<1s; avoids yt-search datacenter IP hangs)
-  try {
-    const innerResult = await searchYouTubeViaInnerTube(query, 5000);
-    if (innerResult) {
-      setCache(cacheKey, innerResult);
-      return innerResult;
-    }
-  } catch (err) {
-    console.warn("⚠️ InnerTube search failed, trying yt-search fallback:", err.message);
-  }
-
-  try {
-    const results = await ytsWithTimeout(query, 4500);
-    if (results.videos && results.videos.length > 0) {
-      const video = results.videos[0];
-      const result = {
-        url: video.url,
-        title: video.title,
-        artist: video.author?.name || video.author || "Unknown Artist",
-        duration: video.timestamp || "Unknown",
-        durationSeconds: video.seconds || 0,
-        views: video.views ? video.views.toLocaleString() : "0",
-        thumbnail: video.thumbnail || video.image || "",
-        ago: video.ago || "",
-        videoId: video.videoId
-      };
-      setCache(cacheKey, result);
-      return result;
-    }
-    return null;
-  } catch (err) {
-    console.error("YouTube search error (yt-search fallback):", err.message);
-    logError('searchYouTube', err, { query });
-    return null;
-  }
-}
-
-async function getVideoMetadata(url) {
-  const cacheKey = `meta:${url}`;
-  const cached = getCached(cacheKey);
-  if (cached) return cached;
-
-  try {
-    let videoId = null;
-    const urlObj = new URL(url);
-    if (urlObj.hostname.includes('youtu.be')) {
-      videoId = urlObj.pathname.substring(1);
-    } else {
-      videoId = urlObj.searchParams.get('v');
-    }
-    
-    if (videoId) {
-      const results = await ytsWithTimeout({ videoId: videoId }, 8000);
-      if (results && results.title) {
-        const metaResult = {
-          url: url,
-          title: results.title,
-          artist: results.author?.name || results.author || "Unknown Artist",
-          duration: results.timestamp || "Unknown",
-          durationSeconds: results.seconds || 0,
-          views: results.views ? results.views.toLocaleString() : "0",
-          thumbnail: results.thumbnail || results.image || "",
-          ago: results.ago || "",
-          videoId: videoId
-        };
-        setCache(cacheKey, metaResult);
-        return metaResult;
-      }
-    }
-    return null;
-  } catch (err) {
-    console.error("Metadata fetch error:", err);
-    return null;
-  }
-}
-
-function killCurrentStream() {
-  // V8 background incremental GC handles memory without stop-the-world thread blocking
-  currentStreamId++;
-  if (currentYtdlp && currentDecoder) {
-    try {
-      currentYtdlp.stdout.unpipe();
-    } catch (e) {}
-  }
-  
-  if (currentDecoder) {
-    try {
-      if (currentDecoder.stdin && !currentDecoder.stdin.destroyed) {
-        currentDecoder.stdin.destroy();
-      }
-      if (currentDecoder.stdout && !currentDecoder.stdout.destroyed) {
-        currentDecoder.stdout.destroy();
-      }
-      if (currentDecoder.stderr && !currentDecoder.stderr.destroyed) {
-        currentDecoder.stderr.destroy();
-      }
-    } catch (e) {}
-    try {
-      currentDecoder.kill('SIGKILL');
-    } catch (e) {}
-    currentDecoder = null;
-  }
-  
-  if (currentYtdlp) {
-    try {
-      if (currentYtdlp.stdout && !currentYtdlp.stdout.destroyed) {
-        currentYtdlp.stdout.destroy();
-      }
-      if (currentYtdlp.stderr && !currentYtdlp.stderr.destroyed) {
-        currentYtdlp.stderr.destroy();
-      }
-    } catch (e) {}
-    try {
-      currentYtdlp.kill('SIGKILL');
-    } catch (e) {}
-    currentYtdlp = null;
-  }
-
-  if (currentLocalFilePath) {
-    try {
-      if (fs.existsSync(currentLocalFilePath) && !path.basename(currentLocalFilePath).startsWith('song_')) {
-        fs.unlinkSync(currentLocalFilePath);
-      }
-    } catch (e) {}
-    currentLocalFilePath = null;
-  }
-  
-  // streamManager.clearAudioBuffer(); // Keep circular audio buffer intact to prevent client stream starvation
-}
-
-function executeYtdlpDownload(url, outputPath, thisStreamId) {
-  const proxyArgs = getProxyArgs();
-  const isSoundCloud = url.includes('soundcloud.com') || url.startsWith('scsearch');
-  // Lightweight Node.js engine prevents 512MB OOM
-  const jsRuntimeArgs = ['--no-js-runtimes', '--js-runtimes', 'node'];
-  const formatArg = 'bestaudio/ba/b/best';
-
-  const ytdlpArgs = [
-    '--force-ipv4',
-    '--no-cache-dir',
-    '--socket-timeout', '10',
-    '--retries', '2',
-    '--concurrent-fragments', '1',
-    '--no-video',
-    ...jsRuntimeArgs,
-    '--user-agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-    '-f', formatArg,
-    '--no-playlist',
-    '--no-check-certificates',
-    '--newline',
-    ...proxyArgs,
-    '-o', outputPath,
-    url
-  ];
-
-  console.log(`📥 [Downloader] Fetching audio track to "${path.basename(outputPath)}" (fast direct mode, no cookies) from ${isSoundCloud ? 'SoundCloud' : 'YouTube'}...`);
-
-  return new Promise((resolve, reject) => {
-    if (thisStreamId !== currentStreamId) return reject(new Error('Superseded'));
-
-    currentYtdlp = spawnYtdlp(ytdlpArgs, { env: ytdlpEnv, stdio: ['ignore', 'pipe', 'pipe'] });
-    let lastLog = 0;
-    let errOutput = '';
-    let isSettled = false;
-
-    // Hard timeout: 45s max for yt-dlp download
-    const downloadTimeout = setTimeout(() => {
-      if (!isSettled && currentYtdlp) {
-        console.error(`⚠️ [Downloader] yt-dlp download timed out after 45s. Aborting download.`);
-        try { currentYtdlp.kill('SIGKILL'); } catch (e) {}
-      }
-    }, 45000);
-
-    const handleOutput = (d, isErr) => {
-      const msg = d.toString();
-      if (isErr) errOutput += msg;
-      const lines = msg.split(/[\r\n]+/);
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        if (trimmed.includes('[download]') && trimmed.includes('%')) {
-          const now = Date.now();
-          if (now - lastLog > 1500 || trimmed.includes('100%')) {
-            lastLog = now;
-            console.log(`📥 [yt-dlp] ${trimmed}`);
-          }
-        } else if (trimmed.includes('ERROR') || trimmed.includes('error')) {
-          console.error(`❌ [yt-dlp Error] ${trimmed}`);
-        } else if (trimmed.includes('WARNING') || trimmed.includes('warning')) {
-          console.warn(`⚠️ [yt-dlp] ${trimmed}`);
-        } else if (trimmed.startsWith('[')) {
-          console.log(`ℹ️ [yt-dlp] ${trimmed}`);
-        }
-      }
-    };
-
-    if (currentYtdlp.stdout) {
-      currentYtdlp.stdout.on('data', (d) => handleOutput(d, false));
-    }
-    if (currentYtdlp.stderr) {
-      currentYtdlp.stderr.on('data', (d) => handleOutput(d, true));
-    }
-
-    currentYtdlp.on('close', (code, signal) => {
-      clearTimeout(downloadTimeout);
-      currentYtdlp = null;
-      if (isSettled) return;
-      isSettled = true;
-
-      if (thisStreamId !== currentStreamId) {
-        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (e) {}
-        return reject(new Error('Superseded'));
-      }
-
-      if (code === 0 && fs.existsSync(outputPath) && fs.statSync(outputPath).size > 10000) {
-        const mb = (fs.statSync(outputPath).size / (1024 * 1024)).toFixed(2);
-        console.log(`✅ [Downloader] Track file ready (${mb} MB) at "${path.basename(outputPath)}"`);
-        resolve(outputPath);
-      } else {
-        const err = `yt-dlp exited with code ${code} (signal: ${signal}): ${errOutput.slice(-300).trim()}`;
-        try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (e) {}
-        reject(new Error(err));
-      }
-    });
-
-    currentYtdlp.on('error', (err) => {
-      clearTimeout(downloadTimeout);
-      currentYtdlp = null;
-      if (isSettled) return;
-      isSettled = true;
-      try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (e) {}
-      reject(err);
-    });
   });
 }
 
-async function downloadTrackToFile(url, outputPath, thisStreamId, title = '', metadata = null) {
-  const isDirectSoundCloud = url.includes('soundcloud.com') || url.startsWith('scsearch:');
-  const cacheKey = getSongCacheKey(url, title);
-  const cachedPath = path.join(CACHE_DIR, `song_${cacheKey}.m4a`);
+/**
+ * Offloads audio repair/normalization to Termux Residential Bridge (primary if available) or Cloud Worker.
+ * Controller remains 100% FFmpeg-free (0 child processes, 0 FFmpeg binaries).
+ */
+async function transcodeAudio(sourceFilePath, cacheKey, title, artist, durationSeconds = 0) {
+  const isBridgeAlive = Boolean(activeResidentialBridgeUrl && (Date.now() - lastResidentialBridgeHeartbeat < 120000));
 
-  // 1. Check local persistent song cache first (0s instant playback!)
-  if (fs.existsSync(cachedPath)) {
-    try {
-      const stats = fs.statSync(cachedPath);
-      if (stats.size > 50000) {
-        console.log(`⚡ [SongCache] Instant Cache Hit for "${title || url}" (${(stats.size / 1024 / 1024).toFixed(2)} MB)!`);
-        try {
-          const now = new Date();
-          fs.utimesSync(cachedPath, now, now);
-          const jsonPath = cachedPath.replace(/\.m4a$/, '.json');
-          if (fs.existsSync(jsonPath)) fs.utimesSync(jsonPath, now, now);
-        } catch (_) {}
-        return cachedPath; // Zero-copy: decode directly from persistent cache
-      }
-    } catch (_) {}
+  // If Termux bridge is available, try it first; fallback to Cloud Worker if Termux fails or is offline
+  const targets = [];
+  if (isBridgeAlive) {
+    targets.push({ name: 'Termux Residential Bridge', url: `${activeResidentialBridgeUrl}/transcode` });
+  }
+  if (DOWNLOAD_WORKER_URL) {
+    targets.push({ name: 'Cloud Download Worker', url: `${DOWNLOAD_WORKER_URL}/transcode` });
   }
 
-  // 2. If Residential Bridges are connected and healthy, stream YouTube with Multi-Bridge Load Balancing & Failover
-  if (!isDirectSoundCloud) {
-    const candidateBridges = bridgePoolManager.getAvailableBridges();
-    if (candidateBridges.length > 0) {
-      for (const bridge of candidateBridges) {
-        if (thisStreamId !== currentStreamId) break;
-
-        console.log(`🏠 [Downloader] Streaming YouTube audio via Bridge "${bridge.name}" (${bridge.url})...`);
-        bridgePoolManager.markDownloadStart(bridge);
-
-        let downloadSuccess = false;
-        try {
-          const bridgeStreamUrl = `${bridge.url}/stream?url=${encodeURIComponent(url)}`;
-          const resp = await fetch(bridgeStreamUrl, { signal: AbortSignal.timeout(60000) });
-          if (!resp.ok) {
-            if (resp.status === 530 || resp.status === 404) {
-              bridgePoolManager.remove(bridge.url);
-            }
-            throw new Error(`Bridge returned HTTP status ${resp.status}`);
-          }
-          const fileStream = fs.createWriteStream(outputPath);
-          await new Promise((resolve, reject) => {
-            resp.body.pipe(fileStream);
-            resp.body.on('error', reject);
-            fileStream.on('finish', resolve);
-            fileStream.on('error', reject);
-          });
-          if (thisStreamId !== currentStreamId) {
-            try { fs.unlinkSync(outputPath); } catch (_) {}
-            throw new Error("Download aborted: Stream ID changed");
-          }
-          const stats = fs.statSync(outputPath);
-          if (stats.size > 50000) {
-            console.log(`✅ [Downloader] YouTube track downloaded via "${bridge.name}" (${(stats.size / 1024 / 1024).toFixed(2)} MB)`);
-            downloadSuccess = true;
-            bridgePoolManager.markDownloadEnd(bridge, true);
-
-            await saveSongToPersistentCache(outputPath, cacheKey, metadata, 'youtube');
-            return outputPath;
-          }
-          console.warn(`⚠️ [Downloader] "${bridge.name}" file too small (${stats.size} bytes), trying next bridge...`);
-        } catch (bridgeErr) {
-          if (thisStreamId !== currentStreamId) throw bridgeErr;
-          console.warn(`⚠️ [Downloader] Bridge "${bridge.name}" failed (${bridgeErr.message}), trying next bridge...`);
-        } finally {
-          if (!downloadSuccess) {
-            bridgePoolManager.markDownloadEnd(bridge, false);
-            try { if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath); } catch (_) {}
-          }
-        }
-      }
-      console.warn(`⚠️ [Downloader] All available residential bridges failed, proceeding to SoundCloud fallback...`);
-    } else {
-      console.log(`⚡ [Downloader] No active residential bridges — fast-tracking directly to SoundCloud (skipping 30s cloud timeout)...`);
-    }
+  if (targets.length === 0) {
+    console.warn('⚠️ [AudioRepair] Cannot transcode: neither Termux bridge nor Cloud Worker is available');
+    return null;
   }
-
-  // 3. Clean high-fidelity SoundCloud Fallback
-  const isHttpUrl = /^https?:\/\//i.test(url || '');
-  const rawTitle = (title || (!isHttpUrl ? url : '') || '').trim();
-  if (!isDirectSoundCloud && (!rawTitle || rawTitle.toLowerCase() === 'unknown track' || metadata?.skipSoundCloudFallback)) {
-    console.warn(`⚠️ [Downloader] Skipping SoundCloud fallback — unresolved track title for "${url}"`);
-    await sendRoomNotification(`⚠️ Track unavailable (YouTube bridge offline and track title could not be resolved).`);
-    throw new Error(`Song not found on SoundCloud (unresolved title)`);
-  }
-
-  const strippedTitle = rawTitle
-    .replace(/^(?:video\s*song|full\s*video|official\s*video|audio\s*song)\s*[-:]\s*/i, '')
-    .replace(/[#|/]/g, ' ')
-    .replace(/\b(official|music|video|song|full|lyrics|hd|4k)\b/gi, '')
-    .replace(/\s+/g, ' ')
-    .trim();
-  const cleanTitle = strippedTitle || rawTitle;
-
-  const scTarget = isDirectSoundCloud ? url : `scsearch1:${cleanTitle} original -cover -nightcore -slowed -reverb -karaoke`;
-  console.log(`⚡ [Downloader] SoundCloud: Fetching audio for "${cleanTitle || url}"...`);
 
   try {
-    await executeYtdlpDownload(scTarget, outputPath, thisStreamId);
-    const stats = fs.statSync(outputPath);
-    if (stats.size > 50000) {
-      await saveSongToPersistentCache(outputPath, cacheKey, metadata, isDirectSoundCloud ? 'soundcloud' : 'youtube');
-      return outputPath;
-    }
-  } catch (scErr) {
-    if (!isDirectSoundCloud && cleanTitle) {
+    const fileBuf = await fs.promises.readFile(sourceFilePath);
+
+    for (const target of targets) {
       try {
-        console.warn(`⚠️ [Downloader] Filtered SoundCloud failed, retrying standard query...`);
-        await executeYtdlpDownload(`scsearch1:${cleanTitle}`, outputPath, thisStreamId);
-        const stats = fs.statSync(outputPath);
-        if (stats.size > 50000) {
-          await saveSongToPersistentCache(outputPath, cacheKey, metadata, isDirectSoundCloud ? 'soundcloud' : 'youtube');
-          return outputPath;
-        }
-      } catch (scErr2) {}
-    }
-  }
+        console.log(`🔄 [AudioRepair] Offloading repair transcode for "${title || cacheKey}" to ${target.name} (${target.url})...`);
+        const transRes = await fetch(target.url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: fileBuf,
+          signal: AbortSignal.timeout(60000)
+        });
 
-  // 4. If neither Bridge nor SoundCloud found the song
-  console.error(`❌ [Downloader] Song "${title || url}" not found on SoundCloud (or Bridge is offline)`);
-  await sendRoomNotification(`⚠️ "${cleanTitle || 'Song'}" not found on SoundCloud (YouTube bridge is offline).`);
-  throw new Error(`Song not found on SoundCloud`);
+        if (!transRes.ok) {
+          console.warn(`⚠️ [AudioRepair] ${target.name} returned HTTP ${transRes.status}`);
+          continue;
+        }
+
+        const transArray = await transRes.arrayBuffer();
+        const transBuf = Buffer.from(transArray);
+
+        if (transBuf.length > 5000 && is96kCbrMp3Buffer(transBuf)) {
+          const persistentMp3 = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
+          fs.writeFileSync(persistentMp3, transBuf);
+          console.log(`✅ [AudioRepair] Successfully repaired & cached 96k CBR MP3 via ${target.name} for "${title || cacheKey}" (${(transBuf.length / 1024 / 1024).toFixed(2)} MB)!`);
+
+          // If legacy .m4a was present, delete it
+          const legacyM4a = path.join(CACHE_DIR, `song_${cacheKey}.m4a`);
+          try { if (fs.existsSync(legacyM4a)) fs.unlinkSync(legacyM4a); } catch (_) {}
+
+          // Write metadata json
+          const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
+          fs.writeFileSync(jsonFile, JSON.stringify({
+            title: title || 'Repaired Track',
+            artist: artist || 'Unknown Artist',
+            durationSeconds: durationSeconds || 0,
+            source: `${target.name} 96k Transcode Repair`,
+            format: 'mp3'
+          }, null, 2));
+
+          // Overwrite/upgrade Telegram Cloud Vault with the clean 96k CBR MP3 and delete old message
+          uploadToTelegramVaultBackground(persistentMp3, cacheKey, title, artist, durationSeconds, true);
+
+          pruneSongCache();
+          return persistentMp3;
+        } else {
+          console.warn(`⚠️ [AudioRepair] Output from ${target.name} was invalid or not 96k CBR MP3`);
+        }
+      } catch (err) {
+        console.warn(`⚠️ [AudioRepair] Transcode via ${target.name} failed (${err.message}), trying next target...`);
+      }
+    }
+  } catch (outerErr) {
+    console.warn(`⚠️ [AudioRepair] Failed to read source file for repair:`, outerErr.message);
+  }
+  return null;
 }
 
-async function startStream(url, title, metadata) {
-  killCurrentStream();
-  const thisStreamId = ++currentStreamId;
-  isPreparingTrack = true;
-  isTransitioning = true;
-  isPlaying = false;
-  currentStartTime = 0;
-  currentTitle = title || "Preparing track...";
-  currentMetadata = metadata;
-  broadcastEvent();
-  
-  console.log(`\n🎵 Starting stream #${thisStreamId}: ${title || url}`);
-  
-  streamManager.resumeSilenceFeed();
+const transcodeViaWorker = transcodeAudio;
 
-  const localFilePath = path.join(CACHE_DIR, `track_${thisStreamId}.m4a`);
-  currentLocalFilePath = localFilePath;
-  pruneStaleCacheFiles(localFilePath);
+async function fetchAndSaveTelegramFile(directUrl, cacheKey, track) {
+  try {
+    const resp = await fetch(directUrl, { signal: AbortSignal.timeout(30000) });
+    if (!resp.ok) return null;
 
-  // 1. Lazy download runner: sequence download after TTS decode to prevent CPU overlap
-  let downloadPromise = null;
-  const startDownload = () => {
-    if (!downloadPromise) {
-      downloadPromise = downloadTrackToFile(url, localFilePath, thisStreamId, title, metadata).catch(err => {
-        console.error(`❌ Track download failed: ${err.message}`);
-        return null;
-      });
-    }
-    return downloadPromise;
-  };
+    const persistentFile = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
+    const tempFile = path.join(CACHE_DIR, `temp_${Date.now()}_tg.mp3`);
 
-  // 2. Play TTS announcement if enabled
-  const hasAnnouncement = announcementsEnabled && (title || (metadata && metadata.title));
-  if (hasAnnouncement) {
-    // 1-second radio DJ breathing delay: gives Orihost container CPU time to settle to baseline idle (< 5%),
-    // drains all listener network sockets, and provides a polished radio pause between songs
-    await new Promise(r => setTimeout(r, 1000));
-    if (thisStreamId !== currentStreamId) return;
+    const fileStream = fs.createWriteStream(tempFile);
+    await new Promise((resolve, reject) => {
+      resp.body.pipe(fileStream);
+      resp.body.on('error', reject);
+      fileStream.on('finish', resolve);
+      fileStream.on('error', reject);
+    });
 
-    // Clean title & artist of YouTube clutter to make speech concise and fast to decode
-    let cleanSongTitle = (title || metadata?.title || 'Unknown Track')
-      .replace(/^(?:video\s*song|full\s*video|official\s*video|audio\s*song)\s*[-:]\s*/i, '')
-      .replace(/[#|/].*$/g, '')
-      .replace(/[\[\(].*?[\)\]]/g, '')
-      .replace(/\b(official|music video|official video|video song|full song|lyrics|hd|4k)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    cleanSongTitle = truncateToWords(cleanSongTitle, 6);
-
-    let cleanArtistName = (metadata?.artist || 'Unknown Artist')
-      .replace(/[#|/].*$/g, '')
-      .replace(/\b(official|records|vevo|music|channel)\b/gi, '')
-      .replace(/\s+/g, ' ')
-      .trim();
-    cleanArtistName = truncateToWords(cleanArtistName, 3);
-
-    const requester = metadata?.requesterUsername;
-    const dedicatedTo = metadata?.dedicatedTo;
-    const dedicatedBy = metadata?.dedicatedBy;
-    
-    let announcementText = '';
-    if (dedicatedTo && dedicatedBy) {
-      announcementText = `Dedicated to ${dedicatedTo} by ${dedicatedBy}. Now playing: ${cleanSongTitle}, by ${cleanArtistName}`;
-    } else if (requester) {
-      announcementText = `Requested by ${requester}. Now playing: ${cleanSongTitle}, by ${cleanArtistName}`;
-    } else {
-      announcementText = `Now playing: ${cleanSongTitle}, by ${cleanArtistName}`;
-    }
-    
-    console.log(`🎙️ Announcement: ${announcementText}`);
-    const ttsHash = crypto.createHash('md5').update(`${announcementVoice}:${announcementText}`).digest('hex').slice(0, 16);
-    
-    try {
-      const ttsBuffer = await generateTTSAudio(announcementText);
-      if (ttsBuffer && thisStreamId === currentStreamId) {
-        streamManager.injectTransitionSilence();
-        await injectTTSToStream(ttsBuffer, () => startDownload(), ttsHash);
-        streamManager.injectTransitionSilence();
-      } else {
-        startDownload();
-      }
-    } catch (ttsErr) {
-      console.error('⚠️ TTS announcement error:', ttsErr.message);
-      startDownload();
-    }
-  } else {
-    startDownload();
-  }
-
-  // Ensure download is underway if not yet started
-  startDownload();
-
-  // If track was superseded or skipped during TTS, abort
-  if (thisStreamId !== currentStreamId) {
-    try { if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath); } catch (e) {}
-    return;
-  }
-
-  // 3. Await the complete downloaded track file (usually already downloaded during TTS)
-  // If download is still in flight (e.g. slow connection), resume transition music to prevent dead air
-  let silenceTimer = null;
-  if (!hasAnnouncement) {
-    streamManager.resumeSilenceFeed();
-  } else {
-    // For TTS: only resume transition music if download takes longer than 200ms extra
-    silenceTimer = setTimeout(() => {
-      streamManager.resumeSilenceFeed();
-    }, 200);
-  }
-
-  let readyFile = await downloadPromise;
-  if (silenceTimer) clearTimeout(silenceTimer);
-
-  if (thisStreamId !== currentStreamId) {
-    try { if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath); } catch (e) {}
-    return;
-  }
-
-  if (!readyFile) {
-    if (thisStreamId !== currentStreamId) return;
-    console.warn(`⚠️ Track "${title}" could not be downloaded. Activating Loop-Breaker Top Hits fallback...`);
-    const topHit = getRandomCachedSong();
-    if (topHit) {
-      const fallbackMeta = getCachedSongMetadata(topHit);
-      const fallbackTitle = fallbackMeta.title || 'Top Hit Favorite';
-      const fallbackArtist = fallbackMeta.artist || 'Top Hits Collection';
-
-      console.log(`🎶 [LoopBreaker] Playing verified cached favorite: "${fallbackTitle}" by ${fallbackArtist} (${path.basename(topHit)})`);
-      
-      currentTitle = fallbackTitle;
-      currentMetadata = {
-        ...fallbackMeta,
-        title: fallbackTitle,
-        artist: fallbackArtist,
-        isFallback: true,
-        originalRequestedTitle: title || 'Requested song'
-      };
-
-      await sendRoomNotification(`⚠️ "${title || 'Requested song'}" is unavailable right now. Now playing "${fallbackTitle}" from our Top Hits collection!`);
-      readyFile = topHit;
-      consecutiveZeroByteFailures = 0;
-    } else {
-      console.warn("🛑 [LoopBreaker] Zero cached songs found on disk. Halting playback to prevent CPU throttling loop.");
-      isPreparingTrack = false;
-      isTransitioning = false;
-      softStopPlayback();
-      return;
-    }
-  }
-
-  // 4. Stream the complete local file natively with Frame-Aligned Pacer
-  const volumeFilter = volume !== 100 ? `volume=${volume / 100}` : '';
-  const filterArgs = volumeFilter ? ['-af', volumeFilter] : [];
-
-  const fileToDecode = readyFile || localFilePath;
-  console.log(`🔊 [Local Streamer] Decoding "${path.basename(fileToDecode)}" and starting smooth playback...`);
-
-  // Decode local file at max speed into memory buffer queue
-  const ffmpegArgs = [
-    '-threads', '1',
-    '-vn', '-sn', '-dn',
-    '-i', fileToDecode,
-    '-f', 's16le',
-    '-ar', '44100',
-    '-ac', '2',
-    ...filterArgs,
-    'pipe:1'
-  ];
-
-  currentDecoder = spawn(getFFmpegPath(), ffmpegArgs, { stdio: ['ignore', 'pipe', 'pipe'] });
-
-  const CHUNK_SIZE = 8820; // Exactly 50ms of 44.1kHz 16-bit stereo PCM (2,205 samples)
-  const pcmChunks = [];
-  let queuedBytes = 0;
-  let isDecoderPaused = false;
-  let decoderFinished = false;
-  let totalBytesDecoded = 0;
-
-  // Ultra-gentle PCM micro-buffer: 1.0s (~176 KB), resume at 0.75s (~132 KB) - eliminates decoder CPU burst
-  const MAX_ACCUM_BYTES = CHUNK_SIZE * 20;
-  const RESUME_ACCUM_BYTES = CHUNK_SIZE * 15;
-
-  let lastPcmReceivedAt = Date.now();
-
-  function pullPcmChunk(neededBytes) {
-    if (queuedBytes < neededBytes || pcmChunks.length === 0) return null;
-    if (pcmChunks[0].length === neededBytes) {
-      queuedBytes -= neededBytes;
-      return pcmChunks.shift();
-    }
-    if (pcmChunks[0].length > neededBytes) {
-      const chunk = pcmChunks[0].subarray(0, neededBytes);
-      pcmChunks[0] = pcmChunks[0].subarray(neededBytes);
-      queuedBytes -= neededBytes;
-      return chunk;
-    }
-
-    const out = Buffer.allocUnsafe(neededBytes);
-    let outOffset = 0;
-    while (outOffset < neededBytes && pcmChunks.length > 0) {
-      const head = pcmChunks[0];
-      const remaining = neededBytes - outOffset;
-      if (head.length <= remaining) {
-        head.copy(out, outOffset);
-        outOffset += head.length;
-        queuedBytes -= head.length;
-        pcmChunks.shift();
-      } else {
-        head.copy(out, outOffset, 0, remaining);
-        pcmChunks[0] = head.subarray(remaining);
-        queuedBytes -= remaining;
-        outOffset += remaining;
-      }
-    }
-    return out;
-  }
-
-  function pullRemainingPcm() {
-    if (queuedBytes < 4) return null;
-    const validLen = queuedBytes - (queuedBytes % 4);
-    return pullPcmChunk(validLen);
-  }
-
-  currentDecoder.stdout.on('data', (chunk) => {
-    lastPcmReceivedAt = Date.now();
-    pcmChunks.push(chunk);
-    queuedBytes += chunk.length;
-    totalBytesDecoded += chunk.length;
-
-    if (!isDecoderPaused && queuedBytes >= MAX_ACCUM_BYTES) {
-      currentDecoder.stdout.pause();
-      isDecoderPaused = true;
-    }
-  });
-
-  currentDecoder.stdout.on('end', () => {
-    decoderFinished = true;
-  });
-
-  currentDecoder.stderr.on('data', (d) => {
-    const msg = d.toString().trim();
-    if (msg.includes('Error') || msg.includes('fatal') || msg.includes('Conversion failed')) {
-      console.warn(`⚠️ [FFmpeg Decoder] ${msg.split(/\r?\n/).slice(-1)[0]}`);
-    }
-  });
-
-  currentDecoder.on('close', () => {
-    decoderFinished = true;
-  });
-
-  currentDecoder.on('error', (err) => {
-    console.error('FFmpeg decoder process error:', err.message);
-    decoderFinished = true;
-  });
-
-  // Wait for initial pre-buffer (0.5s cushion = 88,200 bytes) with 15s timeout
-  const preBufferDeadline = Date.now() + 15000;
-  while (queuedBytes < 88200 && !decoderFinished) {
-    if (thisStreamId !== currentStreamId) return;
-    if (Date.now() >= preBufferDeadline) {
-      console.warn(`⚠️ Pre-buffer timeout (15s) waiting for "${title}" (${queuedBytes} bytes buffered)`);
-      if (queuedBytes === 0) {
+    const st = fs.statSync(tempFile);
+    if (st.size > 50000) {
+      const durationSec = track.metadata?.durationSeconds || track.metadata?.seconds || 0;
+      if (validateMp3FileHeader(tempFile)) {
         try {
-          if (currentDecoder && currentDecoder.stdout && !currentDecoder.stdout.destroyed) {
-            currentDecoder.stdout.destroy();
-          }
-          if (currentDecoder && !currentDecoder.killed) {
-            currentDecoder.kill('SIGKILL');
-          }
-        } catch (_) {}
-        currentDecoder = null;
-        decoderFinished = true;
+          fs.renameSync(tempFile, persistentFile);
+          const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
+          fs.writeFileSync(jsonFile, JSON.stringify({
+            title: track.title,
+            artist: track.metadata?.artist || 'Unknown Artist',
+            duration: track.metadata?.duration || 'Unknown',
+            durationSeconds: durationSec,
+            videoId: track.metadata?.videoId || '',
+            source: 'Telegram Cloud Vault (L2 Cache)',
+            format: 'mp3'
+          }, null, 2));
+          pruneSongCache();
+          return persistentFile;
+        } catch (_) {
+          return tempFile;
+        }
+      } else {
+        console.warn(`⚠️ [TelegramVault] Song "${track.title}" from Vault is NOT 96k CBR MP3 (legacy upload). Offloading repair transcode to Worker...`);
+        const fixedFile = await transcodeViaWorker(tempFile, cacheKey, track.title, track.metadata?.artist, durationSec);
+        try { fs.unlinkSync(tempFile); } catch (_) {}
+        if (fixedFile) return fixedFile;
       }
-      break;
     }
-    await new Promise(r => setTimeout(r, 20));
+    try { fs.unlinkSync(tempFile); } catch (_) {}
+  } catch (err) {
+    console.warn(`[TelegramVault] Download error:`, err.message);
+  }
+  return null;
+}
+
+async function downloadTrackToFile(track) {
+  const rawTitle = track.title || track.metadata?.title || '';
+  const cacheKey = getSongCacheKey(track.url, rawTitle);
+  const mp3File = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
+  const m4aFile = path.join(CACHE_DIR, `song_${cacheKey}.m4a`);
+  const artist = track.metadata?.artist || '';
+  const durationSeconds = track.metadata?.durationSeconds || track.metadata?.seconds || 0;
+
+  // 1. Instant Cache Hit (preferring ready .mp3, then legacy .m4a)
+  for (const candidate of [mp3File, m4aFile]) {
+    if (fs.existsSync(candidate)) {
+      try {
+        const stats = fs.statSync(candidate);
+        if (stats.size > 50000) {
+          if (validateMp3FileHeader(candidate)) {
+            console.log(`⚡ [SongCache] Instant Cache Hit for "${rawTitle}" (${(stats.size / 1024 / 1024).toFixed(2)} MB, valid 96k CBR MP3)!`);
+            return candidate;
+          } else {
+            console.warn(`⚠️ [SongCache] Cached file "${candidate}" is not 96k CBR MP3. Offloading repair transcode to Worker...`);
+            const fixedFile = await transcodeViaWorker(candidate, cacheKey, rawTitle, artist, durationSeconds);
+            if (fixedFile) return fixedFile;
+          }
+        }
+      } catch (_) {}
+    }
   }
 
-  if (thisStreamId !== currentStreamId) return;
-
-  if (queuedBytes === 0 && decoderFinished) {
-    if (thisStreamId !== currentStreamId) return;
-    consecutiveZeroByteFailures++;
-    console.warn(`⚠️ Track decoding produced 0 bytes for "${title}". Failures: ${consecutiveZeroByteFailures}/3`);
-    try { if (fs.existsSync(localFilePath) && localFilePath !== fileToDecode) fs.unlinkSync(localFilePath); } catch (e) {}
-    currentLocalFilePath = null;
-    isPreparingTrack = false;
-    isTransitioning = false;
-    if (consecutiveZeroByteFailures >= 3) {
-      softStopPlayback();
-    } else {
-      setTimeout(() => {
-        if (thisStreamId === currentStreamId) playNext();
-      }, 3000);
+  // 1.5. Telegram Cloud Vault Check (L2 Cache)
+  let vaultEntry = telegramVault[cacheKey];
+  if (!vaultEntry) {
+    // Try matching by videoId if available
+    const ytVid = (track.url || '').match(/(?:v=|youtu\.be\/|embed\/)([a-zA-Z0-9_-]{11})/)?.[1] || track.metadata?.videoId;
+    if (ytVid && telegramVault[`yt_${ytVid}`]) {
+      vaultEntry = telegramVault[`yt_${ytVid}`];
     }
-    return;
   }
-
-  if (thisStreamId !== currentStreamId) return;
-
-  // Ready to play!
-  streamManager.stopSilenceFeed();
-  isPlaying = true;
-  isPreparingTrack = false;
-  isTransitioning = false;
-  currentTitle = title || "Unknown Track";
-  currentMetadata = metadata;
-  currentStartTime = Date.now();
-  streamVersion++;
-  console.log("🎧 Now playing:", currentTitle);
-  savePlaybackState();
-  broadcastEvent();
-
-  const TARGET_LEAD_MS = 300; // 300ms steady lead cushion - eliminates 50-chunk CPU spike burst and audio hiccups
-  const pacingStartTime = Date.now();
-  let bytesSent = 0;
-
-  const expectedDurationSec = (metadata && metadata.durationSeconds) 
-    ? Number(metadata.durationSeconds) 
-    : (currentMetadata && currentMetadata.durationSeconds ? Number(currentMetadata.durationSeconds) : 0);
-  const maxAllowedDurationMs = expectedDurationSec > 0 ? (expectedDurationSec + 8) * 1000 : 0;
-
-  console.log(`🔊 [Playing] Continuous 1.0x frame-accurate playback active (300ms smooth cushion)!`);
-
-  // Stream in steady, frame-aligned 50ms chunks using self-correcting lead cushion
-  while (thisStreamId === currentStreamId) {
-    if (queuedBytes >= CHUNK_SIZE) {
-      const chunk = pullPcmChunk(CHUNK_SIZE);
-      if (chunk) {
-        streamManager.feedPCMAudio(chunk);
-        bytesSent += chunk.length;
-      }
-
-      if (isDecoderPaused && queuedBytes <= RESUME_ACCUM_BYTES) {
-        if (currentDecoder && currentDecoder.stdout && !currentDecoder.stdout.destroyed) {
-          currentDecoder.stdout.resume();
-          isDecoderPaused = false;
-          lastPcmReceivedAt = Date.now(); // Reset timer upon resuming stdout
+  if (!vaultEntry && rawTitle) {
+    // Fuzzy title match in L2 Vault
+    const cleanT = rawTitle.toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (cleanT.length >= 8) {
+      for (const [k, v] of Object.entries(telegramVault)) {
+        const vTitle = (v.title || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        if (vTitle && (vTitle === cleanT || (cleanT.length >= 10 && vTitle.includes(cleanT)) || (vTitle.length >= 10 && cleanT.includes(vTitle)))) {
+          vaultEntry = v;
+          console.log(`☁️ [TelegramVault] 🎯 Title match in L2 Vault: "${rawTitle}" -> "${v.title}"`);
+          break;
         }
       }
-
-      // Maintain a steady 2500ms lead cushion ahead of wall-clock real time
-      const audioDurationSentMs = (bytesSent / 176400) * 1000;
-      const realTimeElapsedMs = Date.now() - pacingStartTime;
-      const leadMs = audioDurationSentMs - realTimeElapsedMs;
-
-      if (leadMs > TARGET_LEAD_MS) {
-        // Clamp sleep to 10ms-50ms to eliminate 1ms micro-sleep timer interrupts
-        const sleepMs = Math.max(10, Math.min(50, leadMs - TARGET_LEAD_MS));
-        await new Promise(r => setTimeout(r, sleepMs));
-      }
-    } else if (decoderFinished) {
-      // Decoder has finished and buffer has less than CHUNK_SIZE remaining
-      const chunk = pullRemainingPcm();
-      if (chunk) {
-        streamManager.feedPCMAudio(chunk);
-        bytesSent += chunk.length;
-      }
-      pcmChunks.length = 0;
-      queuedBytes = 0;
-      break; // All audio completely fed to persistent encoder!
-    } else {
-      // 2. Decoder stall watchdog: only check if decoder is unpaused, not finished, and buffer is truly starved
-      if (isDecoderPaused) {
-        lastPcmReceivedAt = Date.now(); // Never count paused buffering time as a stall
-      } else if (!decoderFinished && Date.now() - lastPcmReceivedAt > 15000) {
-        console.warn(`⚠️ [Decoder Watchdog] Decoder stalled with no new audio for 15s. Finishing track.`);
-        const remaining = pullRemainingPcm();
-        if (remaining) {
-          streamManager.feedPCMAudio(remaining);
-          bytesSent += remaining.length;
-        }
-        pcmChunks.length = 0;
-        queuedBytes = 0;
-        decoderFinished = true;
-        break;
-      }
-
-      // Waiting for decoder to fill next 50ms chunk
-      await new Promise(r => setTimeout(r, 10));
-    }
-  
-
-      // 3. Duration limit watchdog: if playback exceeded expected duration + grace period
-    const realTimeElapsedMs = Date.now() - pacingStartTime;
-    if (maxAllowedDurationMs > 0 && realTimeElapsedMs > maxAllowedDurationMs) {
-      console.warn(`⏰ [Duration Watchdog] Song reached duration limit (${expectedDurationSec}s + grace). Finishing track gracefully.`);
-      break;
     }
   }
 
-  // Ensure decoder process is terminated immediately after loop
-  if (currentDecoder) {
+  if (vaultEntry && vaultEntry.fileId) {
     try {
-      if (currentDecoder.stdout && !currentDecoder.stdout.destroyed) currentDecoder.stdout.destroy();
-      if (!currentDecoder.killed) currentDecoder.kill('SIGKILL');
-    } catch (e) {}
-    currentDecoder = null;
+      console.log(`☁️ [TelegramVault] 🎯 L2 Vault Hit for "${rawTitle}"! Streaming from Telegram CDN...`);
+      const directUrl = await getTelegramDirectFileUrl(vaultEntry.fileId);
+      if (directUrl) {
+        const cachedFile = await fetchAndSaveTelegramFile(directUrl, cacheKey, track);
+        if (cachedFile) {
+          console.log(`✅ [TelegramVault] Streamed & ready from Telegram CDN: "${rawTitle}" (0% CPU, 0s DL)!`);
+          return cachedFile;
+        }
+      }
+    } catch (tgErr) {
+      console.warn(`⚠️ [TelegramVault] Vault fetch failed (${tgErr.message}), falling back to live downloaders.`);
+    }
   }
 
-  // If track was skipped or superseded, abort cleanly
-  if (thisStreamId !== currentStreamId) {
-    try { if (fs.existsSync(localFilePath)) fs.unlinkSync(localFilePath); } catch (e) {}
+  // 2. Direct HTTP Audio File (mp3/aac/icecast)
+  if (track.url && track.url.startsWith('http') && !track.url.includes('youtube.com') && !track.url.includes('youtu.be')) {
+    return track.url;
+  }
+
+  // 3. Delegate to Termux Residential Bridge (YouTube) or Cloud Worker (JioSaavn)
+  if (!DOWNLOAD_WORKER_URL && !activeResidentialBridgeUrl) {
+    return track.url;
+  }
+
+  let cleanSearch = '';
+  if (track.requestedQuery && typeof track.requestedQuery === 'string' && !track.requestedQuery.startsWith('http')) {
+    cleanSearch = track.requestedQuery.trim();
+  } else {
+    cleanSearch = cleanQueryForWorker(rawTitle, artist);
+  }
+
+  // Check if Termux Residential Bridge is currently connected & alive (heartbeat within 2 minutes)
+  const isBridgeAlive = Boolean(activeResidentialBridgeUrl && (Date.now() - lastResidentialBridgeHeartbeat < 120000));
+
+  let primaryServiceUrl = null;
+  let primaryTargetUrl = null;
+  let serviceName = '';
+
+  if (isBridgeAlive) {
+    // 🌟 PRIMARY: Termux Residential Bridge is online -> YouTube (no datacenter bot block!)
+    serviceName = 'Termux YouTube Bridge';
+    primaryServiceUrl = activeResidentialBridgeUrl;
+    let ytTarget = track.url;
+    if (!ytTarget || !ytTarget.startsWith('http')) {
+      ytTarget = `ytsearch1:${cleanSearch || rawTitle}`;
+    }
+    primaryTargetUrl = ytTarget;
+  } else {
+    // 🛡️ FALLBACK: Termux is offline -> Cloud Download Worker (100% JioSaavn Studio Engine, zero IP block!)
+    serviceName = 'Cloud Worker (JioSaavn)';
+    primaryServiceUrl = DOWNLOAD_WORKER_URL;
+    primaryTargetUrl = cleanSearch || rawTitle;
+  }
+
+  console.log(`☁️ [DownloadRouter] Selected ${serviceName} for: "${rawTitle || cleanSearch}" (${primaryTargetUrl})...`);
+
+  // Helper to fetch and cache stream
+  async function fetchAndCache(serviceUrl, targetUrl, activeServiceName) {
+    const params = new URLSearchParams({
+      url: targetUrl,
+      title: rawTitle || cleanSearch,
+      artist: artist,
+      duration: String(durationSeconds)
+    });
+
+    const endpoint = `${serviceUrl}/stream?${params.toString()}`;
+    const resp = await fetch(endpoint, { signal: AbortSignal.timeout(80000) });
+    if (!resp.ok) {
+      throw new Error(`${activeServiceName} returned HTTP ${resp.status}`);
+    }
+
+    const contentType = (resp.headers.get('content-type') || '').toLowerCase();
+    const isMp3 = contentType.includes('mpeg') || contentType.includes('mp3') || activeServiceName.includes('Termux') || activeServiceName.includes('Worker');
+    const ext = isMp3 ? '.mp3' : '.m4a';
+    const persistentFile = path.join(CACHE_DIR, `song_${cacheKey}${ext}`);
+    const tempFile = path.join(CACHE_DIR, `temp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}${ext}`);
+
+    const fileStream = fs.createWriteStream(tempFile);
+    await new Promise((resolve, reject) => {
+      resp.body.pipe(fileStream);
+      resp.body.on('error', reject);
+      fileStream.on('finish', resolve);
+      fileStream.on('error', reject);
+    });
+
+    const st = fs.statSync(tempFile);
+    if (st.size > 50000) {
+      if (validateMp3FileHeader(tempFile)) {
+        try {
+          fs.renameSync(tempFile, persistentFile);
+          const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
+          fs.writeFileSync(jsonFile, JSON.stringify({
+            title: track.title,
+            artist: track.metadata?.artist || 'Unknown Artist',
+            duration: track.metadata?.duration || 'Unknown',
+            durationSeconds: durationSeconds,
+            videoId: track.metadata?.videoId || '',
+            source: activeServiceName,
+            format: 'mp3'
+          }, null, 2));
+          console.log(`✅ [DownloadRouter] Successfully downloaded & cached via ${activeServiceName}: "${rawTitle}" (${(st.size / 1024 / 1024).toFixed(2)} MB, 96k CBR MP3)`);
+          uploadToTelegramVaultBackground(persistentFile, cacheKey, track.title || rawTitle, artist, durationSeconds);
+          pruneSongCache();
+          return persistentFile;
+        } catch (e) {
+          uploadToTelegramVaultBackground(tempFile, cacheKey, track.title || rawTitle, artist, durationSeconds);
+          return tempFile;
+        }
+      } else {
+        console.warn(`⚠️ [DownloadRouter] Stream from ${activeServiceName} was not valid 96k CBR MP3. Offloading repair transcode to Worker...`);
+        const fixedFile = await transcodeViaWorker(tempFile, cacheKey, rawTitle, artist, durationSeconds);
+        try { fs.unlinkSync(tempFile); } catch (_) {}
+        if (fixedFile) return fixedFile;
+      }
+    } else {
+      try { fs.unlinkSync(tempFile); } catch (_) {}
+      throw new Error(`${activeServiceName} stream was empty or corrupted`);
+    }
+  }
+
+  try {
+    return await fetchAndCache(primaryServiceUrl, primaryTargetUrl, serviceName);
+  } catch (primaryErr) {
+    // If Termux bridge failed, automatically fall back to Cloud Worker JioSaavn
+    if (isBridgeAlive && DOWNLOAD_WORKER_URL && primaryServiceUrl !== DOWNLOAD_WORKER_URL) {
+      console.warn(`⚠️ [DownloadRouter] ${serviceName} failed (${primaryErr.message}). Retrying via Cloud Worker JioSaavn...`);
+      return await fetchAndCache(DOWNLOAD_WORKER_URL, cleanSearch || rawTitle, 'Cloud Worker (JioSaavn Fallback)');
+    }
+    throw primaryErr;
+  }
+}
+
+async function stopPlayback(room = rooms.room1) {
+  const targetRoom = (room && room.id && rooms[room.id]) ? room : rooms.room1;
+  targetRoom.currentPlaybackSession++;
+  targetRoom.isPlaying = false;
+  targetRoom.isPreparing = false;
+  targetRoom.currentTrack = null;
+  targetRoom.saveState();
+  broadcastEvent(targetRoom);
+  await callAudioServer(targetRoom, '/stop');
+}
+
+function prefetchNextTrack(room = rooms.room1) {
+  const targetRoom = (room && room.id && rooms[room.id]) ? room : rooms.room1;
+  if (targetRoom.queue.length > 0) {
+    const nextTrack = targetRoom.queue[0];
+    downloadTrackToFile(nextTrack).catch(() => {});
+  }
+}
+
+// Play Next Track In Queue for a specific Room
+async function playNext(room = rooms.room1) {
+  const targetRoom = (room && room.id && rooms[room.id]) ? room : rooms.room1;
+  const sessionId = ++targetRoom.currentPlaybackSession;
+
+  if (targetRoom.queue.length === 0) {
+    targetRoom.isPlaying = false;
+    targetRoom.isPreparing = false;
+    targetRoom.currentTrack = null;
+    targetRoom.saveState();
+    broadcastEvent(targetRoom);
+    await callAudioServer(targetRoom, '/stop');
+    console.log(`⏹️ [${targetRoom.id}] Queue is empty, audio server set to idle loop.`);
     return;
   }
 
-  // All bytes fed to persistent encoder. Await remaining lead cushion so listeners hear final notes.
-  const totalTrackDurationMs = (bytesSent / 176400) * 1000;
-  const remainingPlayTimeMs = Math.max(0, totalTrackDurationMs - (Date.now() - pacingStartTime));
-  if (remainingPlayTimeMs > 0) {
-    await new Promise(r => setTimeout(r, Math.min(remainingPlayTimeMs, 3000)));
-  }
+  // Immediately stop any previous audio and speech announcement on this room's audio-server
+  await callAudioServer(targetRoom, '/stop');
+  if (sessionId !== targetRoom.currentPlaybackSession) return;
 
-  if (thisStreamId !== currentStreamId) return;
+  const track = targetRoom.queue.shift();
+  targetRoom.currentTrack = track;
+  targetRoom.isPlaying = true;
+  targetRoom.isPreparing = true;
+  targetRoom.saveState();
+  broadcastEvent(targetRoom);
 
-  const totalPlayedSec = Math.floor((Date.now() - currentStartTime) / 1000);
-  console.log(`✅ Track completed: ${title || currentTitle} (${totalPlayedSec}s, ${(bytesSent / 1024).toFixed(1)} KB)`);
+  console.log(`▶️ [MainController:${targetRoom.id}] Preparing [Session ${sessionId}]: "${track.title}"`);
 
-  streamManager.resumeSilenceFeed();
+  const isBridgeAlive = Boolean(activeResidentialBridgeUrl && (Date.now() - lastResidentialBridgeHeartbeat < 120000));
 
-  // Clean up local track file immediately (protecting persistent song cache)
-  try {
-    if (fs.existsSync(localFilePath) && localFilePath !== fileToDecode) {
-      fs.unlinkSync(localFilePath);
+  // --- 1. Announcements: Send TTS before song if enabled ---
+  let ttsPlayedPromise = null;
+  if (targetRoom.announcementsEnabled && (track.title || track.metadata?.title)) {
+    const { cleanTitle, cleanArtist } = cleanForTTS(track.title, track.metadata?.artist);
+    const requester = track.metadata?.requesterUsername;
+    const dedicatedTo = track.metadata?.dedicatedTo;
+    const dedicatedBy = track.metadata?.dedicatedBy;
+
+    let text = '';
+    if (dedicatedTo && dedicatedBy) {
+      text = `Dedicated to ${dedicatedTo} by ${dedicatedBy}. Now playing: ${cleanTitle}, by ${cleanArtist}`;
+    } else if (requester) {
+      text = `Requested by ${requester}. Now playing: ${cleanTitle}, by ${cleanArtist}`;
+    } else {
+      text = `Now playing: ${cleanTitle}, by ${cleanArtist}`;
     }
-  } catch (e) {}
-  currentLocalFilePath = null;
 
-  consecutiveZeroByteFailures = 0;
-  isPlaying = false;
-  isPreparingTrack = false;
-  isTransitioning = false;
-  currentStartTime = 0;
-  savePlaybackState();
-  broadcastEvent();
-
-  if (thisStreamId === currentStreamId) {
-    setImmediate(() => playNext());
-  }
-}
-
-function softStopPlayback() {
-  console.log("⏸️ Soft stop - keeping stream alive with silence...");
-  currentStreamId++;
-  isPlaying = false;
-  isPreparingTrack = false;
-  isTransitioning = false;
-  
-  savePlaybackState();
-  
-  killCurrentStream();
-  
-  currentTitle = "Waiting for next song...";
-  currentMetadata = null;
-  currentIsAutoplay = false;
-  
-  streamManager.resumeSilenceFeed();
-}
-
-function stopPlayback() {
-  console.log("⏸️ Stopping playback completely...");
-  currentStreamId++;
-  isPlaying = false;
-  isPreparingTrack = false;
-  isTransitioning = false;
-  
-  savePlaybackState();
-  
-  killCurrentStream();
-  
-  currentTitle = "No music playing";
-  currentMetadata = null;
-  currentIsAutoplay = false;
-
-  streamManager.resumeSilenceFeed();
-}
-
-const MAX_SSE_CLIENTS = 50;
-const sseClients = new Set();
-app.get("/events", (req, res) => {
-  if (sseClients.size >= MAX_SSE_CLIENTS) {
-    for (const client of sseClients) {
-      if (client.destroyed || client.writableEnded) {
-        sseClients.delete(client);
+    const ttsUrl = await generateAndNormalizeTts(text, targetRoom.announcementVoice);
+    if (ttsUrl && sessionId === targetRoom.currentPlaybackSession) {
+      try {
+        console.log(`🎙️ [TTS:${targetRoom.id}] Offloading announcement to Audio Server: "${text}"`);
+        ttsPlayedPromise = callAudioServer(targetRoom, '/announce', { url: ttsUrl, wait: true });
+      } catch (ttsErr) {
+        console.warn(`⚠️ [TTS:${targetRoom.id}] Warning:`, ttsErr.message);
       }
     }
   }
-  if (sseClients.size >= MAX_SSE_CLIENTS) {
-    return res.status(503).send({ error: "Too many active SSE clients" });
-  }
 
-  res.writeHead(200, {
-    "Content-Type": "text/event-stream",
-    "Cache-Control": "no-cache",
-    "Connection": "keep-alive",
-    "X-Accel-Buffering": "no"
+  // --- 2. Download the music track (Termux YouTube or Cloud Worker 2-phase fallback) ---
+  console.log(`📥 [MainController:${targetRoom.id}] Downloading audio track for [Session ${sessionId}]: "${track.title}"`);
+  let readyFile = await downloadTrackToFile(track).catch(err => {
+    console.warn(`⚠️ [MainController:${targetRoom.id}] Download failed for "${track.title}": ${err.message}`);
+    return null;
   });
-  
-  sseClients.add(res);
 
-  let heartbeat = null;
-  const cleanupSseClient = () => {
-    if (heartbeat) {
-      clearInterval(heartbeat);
-      heartbeat = null;
-    }
-    sseClients.delete(res);
-  };
-
-  req.on("close", cleanupSseClient);
-  if (typeof res.on === "function") {
-    res.on("close", cleanupSseClient);
-    res.on("error", cleanupSseClient);
-  }
-  
-  const currentState = {
-    isPlaying,
-    isTransitioning,
-    currentTitle,
-    currentMetadata,
-    queue,
-    startTime: currentStartTime,
-    serverElapsed: isPlaying && currentStartTime > 0 ? Math.max(0, Date.now() - currentStartTime) : 0,
-    volume,
-    announcementsEnabled,
-    health: streamManager.getHealthStatus(),
-    stats: streamManager.getStats()
-  };
-  try {
-    if (res.destroyed || res.writableEnded) {
-      cleanupSseClient();
-      return;
-    }
-    res.write(`data: ${JSON.stringify(currentState)}\n\n`);
-  } catch (_) {
-    cleanupSseClient();
+  if (sessionId !== targetRoom.currentPlaybackSession) {
+    console.log(`⏹️ [MainController:${targetRoom.id}] Session ${sessionId} superseded after download, cancelling.`);
     return;
   }
-  
-  heartbeat = setInterval(() => {
-    if (res.destroyed || res.writableEnded) {
-      cleanupSseClient();
-      return;
+
+  // If TTS announcement was launched, await its completion before song playback
+  if (ttsPlayedPromise) {
+    try { await ttsPlayedPromise; } catch (_) {}
+  }
+
+  if (sessionId !== targetRoom.currentPlaybackSession) {
+    console.log(`⏹️ [MainController:${targetRoom.id}] Session ${sessionId} superseded after announcement, cancelling.`);
+    return;
+  }
+
+  // If track download failed or file is unavailable
+  if (!readyFile) {
+    console.warn(`⚠️ [MainController:${targetRoom.id}] Track "${track.title}" is unavailable. Announcing and skipping in 10s...`);
+    targetRoom.currentTrack = {
+      ...track,
+      title: `${track.title} (Unavailable)`
+    };
+    broadcastEvent(targetRoom, 'track_unavailable', { track });
+
+    const unavailableMsg = 'The song is currently unavailable. The next song will start in 10 seconds.';
+    const ttsUrl = await generateAndNormalizeTts(unavailableMsg, targetRoom.announcementVoice);
+    if (ttsUrl && sessionId === targetRoom.currentPlaybackSession) {
+      try {
+        await callAudioServer(targetRoom, '/announce', { url: ttsUrl });
+      } catch (e) {
+        console.warn(`⚠️ [TTS:${targetRoom.id}] Unavailable announcement error:`, e.message);
+      }
     }
-    try {
-      res.write(':heartbeat\n\n');
-    } catch (_) {
-      cleanupSseClient();
+
+    if (sessionId !== targetRoom.currentPlaybackSession) return;
+
+    const waitMs = 10000;
+    const interval = 500;
+    let elapsed = 0;
+    while (elapsed < waitMs) {
+      if (sessionId !== targetRoom.currentPlaybackSession) return;
+      await new Promise(r => setTimeout(r, Math.min(interval, waitMs - elapsed)));
+      elapsed += interval;
     }
-  }, 20000);
+
+    if (sessionId === targetRoom.currentPlaybackSession) {
+      console.log(`⏭️ [MainController:${targetRoom.id}] Advancing to next song after unavailable track wait.`);
+      await playNext(targetRoom);
+    }
+    return;
+  }
+
+  // 3. Immediately start the track on the audio server (0s gap from SSD cache)
+  let audioFileUrl = readyFile;
+  if (!readyFile.startsWith('http://') && !readyFile.startsWith('https://')) {
+    audioFileUrl = `${CONTROLLER_URL}/api/audio-file/${path.basename(readyFile)}`;
+  }
+  const webhookUrl = `${CONTROLLER_URL}/api/track-end?room=${targetRoom.id}`;
+
+  console.log(`🎶 [MainController:${targetRoom.id}] Sending track to Audio Server [Session ${sessionId}]: "${track.title}" (URL: ${audioFileUrl})`);
+  await callAudioServer(targetRoom, '/play', {
+    url: audioFileUrl,
+    title: track.title,
+    volume: targetRoom.currentVolume,
+    webhookUrl: webhookUrl
+  });
+
+  if (sessionId === targetRoom.currentPlaybackSession) {
+    targetRoom.isPreparing = false;
+    broadcastEvent(targetRoom);
+  }
+
+  // 4. Pre-fetch the next track in queue in background so it's already cached on SSD
+  prefetchNextTrack(targetRoom);
+
+  // Keep history
+  targetRoom.history.unshift({
+    title: track.title,
+    playedAt: Date.now(),
+    requester: track.metadata?.requesterUsername || 'System'
+  });
+  if (targetRoom.history.length > 50) targetRoom.history.pop();
+}
+
+// Serve cached audio files for Audio Server streaming
+app.get('/api/audio-file/:filename', (req, res) => {
+  const filename = path.basename(req.params.filename);
+  const filePath = path.join(CACHE_DIR, filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).send('Audio file not found');
+  }
+  res.setHeader('Content-Type', 'audio/mpeg');
+  res.sendFile(filePath);
 });
 
-let broadcastTimeout = null;
-function broadcastEvent() {
-  if (sseClients.size === 0) return;
-  if (broadcastTimeout) return; // Debounce rapid state update bursts within 50ms
-  broadcastTimeout = setTimeout(() => {
-    broadcastTimeout = null;
-    if (sseClients.size === 0) return;
-    const currentState = {
-      isPlaying,
-      isTransitioning,
-      currentTitle,
-      currentMetadata,
-      queue,
-      startTime: currentStartTime,
-      serverElapsed: isPlaying && currentStartTime > 0 ? Math.max(0, Date.now() - currentStartTime) : 0,
-      volume,
-      announcementsEnabled,
-      health: streamManager.getHealthStatus(),
-      stats: streamManager.getStats()
-    };
-    const payload = `data: ${JSON.stringify(currentState)}\n\n`;
-    for (const client of sseClients) {
-      if (client.destroyed || client.writableEnded) {
-        sseClients.delete(client);
-        continue;
-      }
+// Direct MP3 Upload API (From Web Dashboard)
+app.post('/api/upload-mp3', async (req, res) => {
+  const room = getRoom(req);
+  const position = (req.query.position || 'next').toLowerCase();
+  const rawTitle = (req.query.title || 'Custom Uploaded Track').trim();
+
+  if (!req.body || req.body.length < 1000) {
+    return res.status(400).json({ error: 'No audio data or file too small (min 1KB)' });
+  }
+
+  const cacheKey = `custom_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`;
+  const persistentFile = path.join(CACHE_DIR, `song_${cacheKey}.mp3`);
+  const tempFile = path.join(CACHE_DIR, `temp_${cacheKey}.raw`);
+
+  try {
+    fs.writeFileSync(tempFile, req.body);
+
+    // Validate or transcode to strict 96kbps CBR MP3 (Offloaded to Download Worker, 0% CPU on Controller)
+    if (is96kCbrMp3Buffer(req.body)) {
+      console.log(`🎬 [Upload:${room.id}] Uploaded audio is already compliant 96kbps CBR MP3.`);
+      fs.renameSync(tempFile, persistentFile);
+    } else if (DOWNLOAD_WORKER_URL) {
       try {
-        client.write(payload);
-      } catch (_) {
-        sseClients.delete(client);
+        console.log(`🎬 [Upload:${room.id}] Offloading upload transcoding to Cloud Worker FFmpeg...`);
+        const transRes = await fetch(`${DOWNLOAD_WORKER_URL}/transcode`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/octet-stream' },
+          body: req.body,
+          signal: AbortSignal.timeout(30000)
+        });
+        if (transRes.ok) {
+          const transBuf = Buffer.from(await transRes.arrayBuffer());
+          if (transBuf.length > 5000 && is96kCbrMp3Buffer(transBuf)) {
+            fs.writeFileSync(persistentFile, transBuf);
+            try { fs.unlinkSync(tempFile); } catch (_) {}
+            console.log(`✅ [Upload:${room.id}] Transcoded via Cloud Worker: ${(transBuf.length / 1024 / 1024).toFixed(2)} MB`);
+          } else {
+            fs.renameSync(tempFile, persistentFile);
+          }
+        } else {
+          fs.renameSync(tempFile, persistentFile);
+        }
+      } catch (trErr) {
+        console.warn(`⚠️ [Upload:${room.id}] Worker transcode failed (${trErr.message}), keeping original file.`);
+        fs.renameSync(tempFile, persistentFile);
+      }
+    } else {
+      fs.renameSync(tempFile, persistentFile);
+    }
+
+    const st = fs.statSync(persistentFile);
+    const estDurationSec = Math.max(1, Math.round(st.size / 12000)); // 12 KB/sec at 96k
+
+    const jsonFile = path.join(CACHE_DIR, `song_${cacheKey}.json`);
+    fs.writeFileSync(jsonFile, JSON.stringify({
+      title: rawTitle,
+      artist: 'Dashboard Upload',
+      duration: `${Math.floor(estDurationSec / 60)}:${String(estDurationSec % 60).padStart(2, '0')}`,
+      durationSeconds: estDurationSec,
+      source: 'Dashboard Direct MP3 Upload',
+      format: 'mp3',
+      savedAt: Date.now()
+    }, null, 2));
+
+    pruneSongCache();
+
+    const songItem = {
+      url: `${CONTROLLER_URL}/api/audio-file/song_${cacheKey}.mp3`,
+      requestedQuery: rawTitle,
+      title: rawTitle,
+      metadata: {
+        title: rawTitle,
+        artist: 'Dashboard Upload',
+        duration: `${Math.floor(estDurationSec / 60)}:${String(estDurationSec % 60).padStart(2, '0')}`,
+        durationSeconds: estDurationSec,
+        source: 'Dashboard Direct MP3 Upload'
+      },
+      isAutoplay: false,
+      addedAt: Date.now()
+    };
+
+    if (position === 'next') {
+      if (!room.isPlaying) {
+        room.queue.unshift(songItem);
+        playNext(room);
+      } else {
+        room.queue.unshift(songItem);
+        room.saveState();
+        broadcastEvent(room, 'queue_update');
+      }
+    } else {
+      room.queue.push(songItem);
+      if (!room.isPlaying) {
+        playNext(room);
+      } else {
+        room.saveState();
+        broadcastEvent(room, 'queue_update');
       }
     }
-  }, 50);
-}
 
-function broadcastEventJSON(data) {
-  if (sseClients.size === 0) return;
-  const payload = `data: ${JSON.stringify(data)}\n\n`;
-  for (const client of sseClients) {
-    if (client.destroyed || client.writableEnded) {
-      sseClients.delete(client);
+    console.log(`📤 [Upload:${room.id}] Successfully uploaded and queued: "${rawTitle}" (${(st.size / 1024 / 1024).toFixed(2)} MB, pos: ${position})`);
+    res.json({
+      ok: true,
+      status: 'uploaded',
+      title: rawTitle,
+      position,
+      queueLength: room.queue.length
+    });
+  } catch (err) {
+    console.error(`❌ [Upload:${room.id}] Upload processing error:`, err.message);
+    try { if (fs.existsSync(tempFile)) fs.unlinkSync(tempFile); } catch (_) {}
+    res.status(500).json({ error: 'Failed to process MP3 upload', details: err.message });
+  }
+});
+
+// Webhook from Audio Server when track finishes naturally
+app.post('/api/track-end', async (req, res) => {
+  const room = getRoom(req);
+  console.log(`🏁 [TrackEnd:${room.id}] Song finished on Audio Server. Advancing queue...`);
+  res.json({ status: 'ok', room: room.id });
+  if (room.isPlaying) {
+    await playNext(room);
+  }
+});
+
+// Periodic Audio Server Watchdog: Keeps Main Controller and Audio Servers in 100% lockstep sync
+setInterval(async () => {
+  for (const room of Object.values(rooms)) {
+    if (!room.isPlaying || room.isPreparing) {
+      room.consecutiveIdleChecks = 0;
       continue;
     }
     try {
-      client.write(payload);
-    } catch (_) {
-      sseClients.delete(client);
-    }
-  }
-}
-
-// REST API for web interface
-function isValidYouTubeURL(urlString) {
-  try {
-    if (typeof urlString !== "string") return false;
-    if (!urlString.startsWith("http://") && !urlString.startsWith("https://")) return false;
-    
-    const url = new URL(urlString);
-    if (url.protocol !== "https:" && url.protocol !== "http:") return false;
-    
-    const allowedHosts = [
-      "www.youtube.com", "youtube.com", "youtu.be",
-      "m.youtube.com", "music.youtube.com"
-    ];
-    
-    return allowedHosts.includes(url.hostname.toLowerCase());
-  } catch (e) {
-    return false;
-  }
-}
-
-app.post("/search", async (req, res) => {
-  const { url } = req.body;
-  
-  if (!url) {
-    return res.status(400).send({ error: "Missing search query" });
-  }
-  
-  try {
-    const searchResult = await searchYouTube(url);
-    
-    if (!searchResult) {
-      return res.status(404).send({ error: "No results found for: " + url });
-    }
-    
-    res.send({ 
-      status: "found", 
-      title: searchResult.title,
-      artist: searchResult.artist,
-      duration: searchResult.duration,
-      url: searchResult.url,
-      metadata: searchResult
-    });
-  } catch (err) {
-    console.error("Error in /search endpoint:", err);
-    res.status(500).send({ error: err.message });
-  }
-});
-
-app.post("/play", async (req, res) => {
-  console.log("Received /play request:", req.body);
-  const { url, isAutoplay = false, sourcePlaylist, ownerUsername, requesterUsername, dedicatedTo, dedicatedBy } = req.body;
-  
-  if (!url) {
-    return res.status(400).send({ error: "Missing URL or search query" });
-  }
-
-  if (queue.length >= MAX_QUEUE_LENGTH) {
-    return res.status(429).send({ error: `Queue is full (maximum ${MAX_QUEUE_LENGTH} songs)` });
-  }
-  
-  try {
-    let videoUrl = url;
-    let metadata = null;
-    let resolvedVideoId = null;
-    
-    if (isValidYouTubeURL(url)) {
-      videoUrl = url;
-      
-      let videoId = null;
-      try {
-        const urlObj = new URL(url);
-        if (urlObj.hostname.includes('youtu.be')) {
-          videoId = urlObj.pathname.substring(1);
-        } else {
-          videoId = urlObj.searchParams.get('v');
+      const status = await callAudioServer(room, '/status', {}, 'GET');
+      const isAudioBusy = Boolean(
+        status?.player?.isPlaying ||
+        status?.isAnnouncing ||
+        status?.stream?.isAnnouncing
+      );
+      if (status && !isAudioBusy && room.isPlaying && !room.isPreparing) {
+        room.consecutiveIdleChecks++;
+        if (room.consecutiveIdleChecks >= 2) {
+          console.warn(`⚠️ [AudioWatchdog:${room.id}] Audio Server verified idle for 10s while Controller is in play state. Advancing queue...`);
+          room.consecutiveIdleChecks = 0;
+          await playNext(room);
         }
-      } catch (e) {}
-      resolvedVideoId = videoId;
-      
-      if (videoId) {
-        try {
-          const results = await ytsWithTimeout({ videoId: videoId }, 8000);
-          if (results && results.title) {
-            metadata = {
-              url: url,
-              title: results.title,
-              artist: results.author?.name || results.author || "Unknown Artist",
-              duration: results.timestamp || "Unknown",
-              durationSeconds: results.seconds || 0,
-              views: results.views ? results.views.toLocaleString() : "0",
-              thumbnail: results.thumbnail || results.image || "",
-              ago: results.ago || "",
-              videoId: videoId
-            };
-          }
-        } catch (err) {}
+      } else {
+        room.consecutiveIdleChecks = 0;
       }
-    } else {
-      const searchResult = await searchYouTube(url);
-      
-      if (!searchResult) {
-        return res.status(404).send({ error: "No results found for: " + url });
-      }
-      
-      videoUrl = searchResult.url;
-      metadata = searchResult;
+    } catch (_) {
+      room.consecutiveIdleChecks = 0;
     }
-    
-    if (!metadata) {
-      metadata = {
-        url: videoUrl,
-        ...(resolvedVideoId ? { videoId: resolvedVideoId } : {}),
-        ...(isValidYouTubeURL(url) ? { skipSoundCloudFallback: true } : {}),
-        artist: "Unknown Artist",
-        duration: "Unknown"
-      };
-    }
-    
-    if (sourcePlaylist) {
-      metadata.sourcePlaylist = sourcePlaylist;
-      metadata.ownerUsername = ownerUsername;
-    }
-    if (requesterUsername) {
-      metadata.requesterUsername = requesterUsername;
-    }
-    if (dedicatedTo) {
-      metadata.dedicatedTo = dedicatedTo;
-      metadata.dedicatedBy = dedicatedBy;
-    }
-    
-    if (queue.length >= MAX_QUEUE_LENGTH) {
-      return res.status(429).send({ error: `Queue is full (maximum ${MAX_QUEUE_LENGTH} songs)` });
-    }
-
-    queue.push({ url: videoUrl, metadata, isAutoplay });
-    saveQueue();
-    
-    if (isPlaying || isTransitioning || isPreparingTrack || isPlayNextLocked) {
-      res.send({ 
-        status: "queued", 
-        position: queue.length,
-        url: videoUrl, 
-        currentTitle,
-        currentMetadata,
-        currentIsAutoplay,
-        queuedTitle: metadata?.title,
-        streamVersion: streamVersion
-      });
-    } else {
-      playNext().catch(playErr => {
-        console.error("Background playNext error:", playErr);
-      });
-      res.send({ 
-        status: "playing", 
-        url: videoUrl, 
-        currentTitle: metadata?.title || "Starting playback...",
-        currentMetadata: metadata,
-        currentIsAutoplay,
-        streamVersion: streamVersion
-      });
-    }
-  } catch (err) {
-    console.error("Error in /play endpoint:", err);
-    res.status(500).send({ error: "Failed to add song to queue", message: err.message });
   }
-});
+}, 5000);
 
-app.post("/insert", async (req, res) => {
-  const { url, requesterUsername, dedicatedTo, dedicatedBy } = req.body;
-  
-  if (!url) {
-    return res.status(400).send({ error: "No URL or search query provided" });
-  }
+// ==========================================
+// 🌐 PUBLIC & DASHBOARD API ROUTES
+// ==========================================
 
-  if (queue.length >= MAX_QUEUE_LENGTH) {
-    return res.status(429).send({ error: `Queue is full (maximum ${MAX_QUEUE_LENGTH} songs)` });
-  }
-  
-  console.log("⏫ INSERT command - Adding to front of queue:", url);
-  let videoUrl = url;
-  let metadata = null;
-  
+// Stream Proxy - Seamlessly pipes audio from the Dedicated Audio Server for the requested room
+app.get(['/stream', '/STREAM'], async (req, res) => {
+  const room = getRoom(req);
   try {
-    if (url.includes("youtube.com") || url.includes("youtu.be")) {
-      videoUrl = url;
-      try {
-        metadata = await getVideoMetadata(url);
-      } catch (metaErr) {
-        metadata = { title: "Unknown Track", artist: "Unknown Artist", duration: "Unknown" };
-      }
-    } else {
-      const searchResult = await searchYouTube(url);
-      
-      if (!searchResult) {
-        return res.status(404).send({ error: "No results found for: " + url });
-      }
-      
-      videoUrl = searchResult.url;
-      metadata = searchResult;
-    }
-    
-    if (!metadata) {
-      metadata = { title: "Unknown Track", artist: "Unknown Artist", duration: "Unknown" };
-    }
-    
-    if (requesterUsername) {
-      metadata.requesterUsername = requesterUsername;
-      metadata.insertedBy = requesterUsername;
-    }
-    if (dedicatedTo) {
-      metadata.dedicatedTo = dedicatedTo;
-      metadata.dedicatedBy = dedicatedBy;
-    }
-    
-    if (queue.length >= MAX_QUEUE_LENGTH) {
-      return res.status(429).send({ error: `Queue is full (maximum ${MAX_QUEUE_LENGTH} songs)` });
-    }
+    const audioStreamUrl = `${room.audioServerUrl}/stream`;
+    const audioRes = await fetch(audioStreamUrl);
 
-    queue.unshift({ url: videoUrl, metadata, isAutoplay: false });
-    saveQueue();
-    
-    if (isPlaying || isTransitioning || isPreparingTrack || isPlayNextLocked) {
-      res.send({ 
-        status: "inserted", 
-        position: 1,
-        url: videoUrl, 
-        currentTitle,
-        insertedTitle: metadata?.title,
-        queueLength: queue.length,
-        streamVersion: streamVersion
-      });
-    } else {
-      playNext().catch(playErr => {
-        console.error("Background playNext error in /insert:", playErr);
-      });
-      res.send({ 
-        status: "playing", 
-        url: videoUrl, 
-        currentTitle: metadata?.title || "Starting playback...",
-        currentMetadata: metadata,
-        streamVersion: streamVersion
-      });
-    }
-  } catch (err) {
-    console.error("Error in /insert endpoint:", err);
-    res.status(500).send({ error: "Failed to insert song", message: err.message });
-  }
-});
+    if (res.socket) res.socket.setNoDelay(true);
 
-app.post("/stop", (req, res) => {
-  console.log("⏹️ STOP command received");
-  
-  queue = [];
-  saveQueue();
-  
-  stopPlayback();
-  isPlayNextLocked = false;
-  playNextGeneration++;
-  
-  res.send({ 
-    status: "stopped",
-    message: "Playback stopped and queue cleared"
-  });
-});
-
-app.post("/next", async (req, res) => {
-  console.log("⏭️ SKIP command received");
-  
-  if (Date.now() - lastSkipTime < 3000) {
-    return res.status(429).send({
-      status: "cooldown",
-      message: "Please wait a few seconds before skipping again."
+    res.writeHead(audioRes.status || 200, {
+      'Content-Type': 'audio/mpeg',
+      'Cache-Control': 'no-cache, no-store, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
+      'Expires': '0',
+      'Connection': 'keep-alive',
+      'Access-Control-Allow-Origin': '*',
+      'X-Stream-Live': 'true',
+      'X-Room-Id': room.id
     });
+
+    audioRes.body.pipe(res);
+    req.on('close', () => {
+      try { audioRes.body.destroy(); } catch (_) {}
+    });
+  } catch (err) {
+    console.error(`⚠️ [StreamProxy:${room.id}] Error:`, err.message);
+    res.status(502).send(`Audio Server [${room.id}] Unreachable.`);
   }
-  
-  const skippedTitle = currentTitle;
-  lastSkipTime = Date.now();
-  
-  currentStreamId++;
-  killCurrentStream();
-  
-  isPreparingTrack = false;
-  isTransitioning = false;
-  isPlaying = false;
-  isPlayNextLocked = false; // Release lock so skip can immediately execute
-  playNextGeneration++;
-  
-  playNext().catch(err => console.error("Error in skip playNext:", err));
-  
-  res.send({ 
-    status: "skipped", 
-    skippedTitle: skippedTitle,
-    nowPlaying: queue.length > 0 ? (queue[0].metadata?.title || "Upcoming track") : "Waiting for next song...",
-    queueLength: queue.length
+});
+
+// Rooms Overview API
+app.get('/api/rooms', (req, res) => {
+  const list = Object.values(rooms).map(r => ({
+    id: r.id,
+    name: r.name,
+    audioServerUrl: r.audioServerUrl,
+    directStreamUrl: `${r.audioServerUrl}/stream`,
+    proxyStreamUrl: `${CONTROLLER_URL}/stream?room=${r.id}`,
+    isPlaying: r.isPlaying,
+    isPreparing: r.isPreparing,
+    currentTrack: r.currentTrack?.title || null,
+    queueLength: r.queue.length,
+    volume: r.currentVolume
+  }));
+  res.json({
+    totalRooms: list.length,
+    rooms: list
   });
 });
 
-app.get("/current", (req, res) => {
-  res.send({
-    title: currentTitle,
-    isPlaying: isPlaying,
-    isTransitioning: isTransitioning || isPreparingTrack,
-    isPreparing: isPreparingTrack,
-    metadata: currentMetadata,
-    isAutoplay: currentIsAutoplay,
-    queueLength: queue.length,
-    streamVersion: streamVersion,
-    startTime: currentStartTime,
-    serverElapsed: isPlaying && currentStartTime > 0 ? Math.max(0, Date.now() - currentStartTime) : 0,
-    streamHealth: streamManager.getHealthStatus()
+// Telegram Cloud Vault status & query
+app.get('/api/vault', (req, res) => {
+  res.json({
+    channel: 'My music',
+    chatId: TELEGRAM_VAULT_CHAT_ID,
+    totalSavedTracks: Object.keys(telegramVault).length,
+    tracks: telegramVault
   });
 });
 
-app.get("/queue", (req, res) => {
-  res.send({
-    queue: queue.map((item, index) => ({
+// Add single track to Telegram Vault from local laptop archiver
+app.post('/api/vault/add', (req, res) => {
+  const { videoId, title, artist, duration, telegram_file_id, telegram_message_id, fileId, messageId } = req.body;
+  const fId = telegram_file_id || fileId;
+  const mId = telegram_message_id || messageId;
+  if (!fId) return res.status(400).json({ error: 'Missing telegram file ID' });
+
+  const keys = [];
+  if (videoId) keys.push(`yt_${videoId}`);
+  if (title) keys.push(getSongCacheKey('', title));
+
+  for (const k of keys) {
+    telegramVault[k] = {
+      fileId: fId,
+      messageId: mId,
+      title: title || 'Archived Track',
+      artist: artist || '',
+      duration: duration || '',
+      videoId: videoId || null,
+      savedAt: new Date().toISOString()
+    };
+  }
+  saveTelegramVault();
+  console.log(`☁️ [TelegramVault] Added "${title}" to L2 vault (keys: ${keys.join(', ')}). Total: ${Object.keys(telegramVault).length}`);
+  res.json({ ok: true, keys, total: Object.keys(telegramVault).length });
+});
+
+// Bulk sync tracks from laptop archiver database
+app.post('/api/vault/sync-bulk', (req, res) => {
+  const { tracks } = req.body;
+  if (!Array.isArray(tracks)) return res.status(400).json({ error: 'Expected array of tracks' });
+  let added = 0;
+  for (const item of tracks) {
+    const fId = item.telegram_file_id || item.fileId;
+    const mId = item.telegram_message_id || item.messageId;
+    if (!fId) continue;
+
+    const keys = [];
+    if (item.videoId) keys.push(`yt_${item.videoId}`);
+    if (item.title) keys.push(getSongCacheKey('', item.title));
+
+    for (const k of keys) {
+      telegramVault[k] = {
+        fileId: fId,
+        messageId: mId,
+        title: item.title,
+        artist: item.artist || '',
+        duration: item.duration || '',
+        videoId: item.videoId || null,
+        savedAt: item.archived_at || new Date().toISOString()
+      };
+      added++;
+    }
+  }
+  saveTelegramVault();
+  console.log(`☁️ [TelegramVault] Bulk synced ${added} keys from laptop. Total: ${Object.keys(telegramVault).length}`);
+  res.json({ ok: true, added, total: Object.keys(telegramVault).length });
+});
+
+// SSE Live Updates
+app.get('/events', (req, res) => {
+  const room = getRoom(req);
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no'
+  });
+  res._roomId = req.query.room || null;
+  sseClients.add(res);
+
+  // Send initial state immediately
+  res.write(`data: ${JSON.stringify(getDashboardState(room, 'initial'))}\n\n`);
+
+  const heartbeat = setInterval(() => {
+    try {
+      res.write(':heartbeat\n\n');
+    } catch (_) {
+      clearInterval(heartbeat);
+    }
+  }, 15000);
+
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    sseClients.delete(res);
+  });
+});
+
+// Current & Queue Info
+app.get('/current', (req, res) => {
+  const room = getRoom(req);
+  res.json({
+    room: room.id,
+    title: room.currentTrack?.metadata?.title || room.currentTrack?.title || 'None',
+    isPlaying: room.isPlaying,
+    isTransitioning: false,
+    isPreparing: room.isPreparing,
+    metadata: room.currentTrack?.metadata || {},
+    isAutoplay: room.currentTrack?.isAutoplay || false,
+    queueLength: room.queue.length,
+    streamVersion: 1,
+    startTime: room.currentTrack?.addedAt || Date.now(),
+    serverElapsed: room.isPlaying && room.currentTrack?.addedAt ? Math.max(0, Date.now() - room.currentTrack.addedAt) : 0
+  });
+});
+
+app.get('/queue', (req, res) => {
+  const room = getRoom(req);
+  res.json({
+    room: room.id,
+    queue: room.queue.map((item, index) => ({
       position: index + 1,
-      title: item.metadata?.title || "Unknown",
-      artist: item.metadata?.artist || "Unknown",
-      duration: item.metadata?.duration || "Unknown",
+      title: item.metadata?.title || item.title || 'Unknown',
+      artist: item.metadata?.artist || 'Unknown',
+      duration: item.metadata?.duration || 'Unknown',
       isAutoplay: item.isAutoplay || false,
       url: item.url,
       videoId: item.metadata?.videoId
     })),
     currentlyPlaying: {
-      title: currentTitle,
-      metadata: currentMetadata,
-      isAutoplay: currentIsAutoplay
+      title: room.currentTrack?.metadata?.title || room.currentTrack?.title || 'None',
+      metadata: room.currentTrack?.metadata || null,
+      isAutoplay: room.currentTrack?.isAutoplay || false
     },
-    queueLength: queue.length
+    queueLength: room.queue.length
   });
 });
 
-app.get("/stats", (req, res) => {
-  res.send({
-    status: "ok",
-    ...streamManager.getStats(),
-    currentTitle,
-    isPlaying,
-    queueLength: queue.length
-  });
-});
+// Search YouTube
+app.post('/search', async (req, res) => {
+  const query = req.body.query || req.body.url;
+  if (!query) return res.status(400).json({ error: 'Missing query' });
 
-app.get("/health", (req, res) => {
-  const health = streamManager.getHealthStatus();
-  const statusCode = health.encoderAlive ? 200 : 503;
-  res.status(statusCode).send({
-    status: health.encoderAlive ? "healthy" : "unhealthy",
-    ...health,
-    isPlaying,
-    currentTitle,
-    queueLength: queue.length
-  });
-});
-
-app.get("/volume", (req, res) => {
-  res.send({
-    status: "ok",
-    volume: volume,
-    min: 0,
-    max: 200
-  });
-});
-
-app.post("/volume", (req, res) => {
-  const { level } = req.body;
-  
-  if (level === undefined || level === null) {
-    return res.status(400).send({ 
-      error: "Missing level parameter",
-      min: 0,
-      max: 200,
-      current: volume
-    });
-  }
-  
-  const newVolume = parseInt(level, 10);
-  
-  if (isNaN(newVolume) || newVolume < 0 || newVolume > 200) {
-    return res.status(400).send({ 
-      error: "Volume must be between 0 and 200",
-      current: volume
-    });
-  }
-  
-  const oldVolume = volume;
-  volume = newVolume;
-  
-  saveSettings();
-  broadcastEvent();
-  
-  console.log(`🔊 Volume changed: ${oldVolume}% → ${volume}%`);
-  
-  res.send({
-    status: "ok",
-    message: "Volume updated. Will apply to next track.",
-    oldVolume: oldVolume,
-    newVolume: volume
-  });
-});
-
-app.get("/announcements", (req, res) => {
-  res.send({
-    status: "ok",
-    enabled: announcementsEnabled,
-    voice: announcementVoice,
-    voiceName: VOICE_OPTIONS[announcementVoice] || 'English (US)',
-    wordLimit: announcementWordLimit,
-    availableVoices: VOICE_OPTIONS
-  });
-});
-
-app.post("/announcements", (req, res) => {
-  const { enabled, voice, wordLimit } = req.body;
-  
-  if (enabled !== undefined) {
-    announcementsEnabled = Boolean(enabled);
-  }
-  
-  if (voice !== undefined) {
-    if (VOICE_OPTIONS[voice]) {
-      announcementVoice = voice;
-    } else {
-      return res.status(400).send({
-        status: "error",
-        error: `Invalid voice code. Available: ${Object.keys(VOICE_OPTIONS).join(', ')}`
-      });
-    }
-  }
-  
-  if (wordLimit !== undefined) {
-    const limit = parseInt(wordLimit);
-    if (isNaN(limit) || limit < 3 || limit > 50) {
-      return res.status(400).send({
-        status: "error",
-        error: "Word limit must be between 3 and 50"
-      });
-    }
-    announcementWordLimit = limit;
-  }
-  
-  saveSettings();
-  broadcastEvent();
-  
-  res.send({
-    status: "ok",
-    enabled: announcementsEnabled,
-    voice: announcementVoice,
-    voiceName: VOICE_OPTIONS[announcementVoice] || 'English (US)',
-    wordLimit: announcementWordLimit,
-    message: announcementsEnabled 
-      ? "TTS announcements enabled! Song info will play during transitions."
-      : "TTS announcements disabled."
-  });
-});
-
-app.get("/quality", (req, res) => {
-  res.send({
-    status: "ok",
-    bitrate: audioBitrate,
-    availableOptions: AVAILABLE_BITRATES
-  });
-});
-
-app.post("/quality", (req, res) => {
-  const { bitrate } = req.body;
-  
-  if (!bitrate) {
-    return res.status(400).send({ 
-      error: "Missing bitrate parameter",
-      availableOptions: AVAILABLE_BITRATES,
-      current: audioBitrate
-    });
-  }
-  
-  const normalizedBitrate = bitrate.toLowerCase().replace('kbps', 'k').replace('k', 'k');
-  
-  if (!AVAILABLE_BITRATES.includes(normalizedBitrate)) {
-    return res.status(400).send({ 
-      error: `Invalid bitrate. Available options: ${AVAILABLE_BITRATES.join(', ')}`,
-      availableOptions: AVAILABLE_BITRATES,
-      current: audioBitrate
-    });
-  }
-  
-  const oldBitrate = audioBitrate;
-  audioBitrate = normalizedBitrate;
-  
-  saveSettings();
-  
-  console.log(`🎚️ Audio quality changed: ${oldBitrate} → ${audioBitrate}`);
-  
-  res.send({
-    status: "ok",
-    message: "Quality updated. Restart stream to apply new bitrate.",
-    oldBitrate: oldBitrate,
-    newBitrate: audioBitrate,
-    note: "The encoder will use the new bitrate on next restart"
-  });
-});
-
-app.post("/resolve", async (req, res) => {
-  const { query } = req.body;
-  
-  if (!query) {
-    return res.status(400).send({ error: "Missing query parameter" });
-  }
-  
   try {
-    let metadata = null;
-    
-    if (isValidYouTubeURL(query)) {
-      let videoId = null;
-      try {
-        const urlObj = new URL(query);
-        if (urlObj.hostname.includes('youtu.be')) {
-          videoId = urlObj.pathname.substring(1);
-        } else {
-          videoId = urlObj.searchParams.get('v');
-        }
-      } catch (e) {}
-      
-      if (videoId) {
-        try {
-          const results = await ytsWithTimeout({ videoId: videoId }, 8000);
-          if (results && results.title) {
-            metadata = {
-              url: query,
-              title: results.title,
-              artist: results.author?.name || results.author || "Unknown Artist",
-              duration: results.timestamp || "Unknown",
-              durationSeconds: results.seconds || 0,
-              views: results.views ? results.views.toLocaleString() : "0",
-              thumbnail: results.thumbnail || results.image || "",
-              ago: results.ago || "",
-              videoId: videoId
-            };
-          }
-        } catch (err) {}
-      }
-    } else {
-      metadata = await searchYouTube(query);
-    }
-    
-    if (!metadata) {
-      return res.status(404).send({ error: "No results found", query: query });
-    }
-    
-    res.send({ status: "resolved", metadata: metadata });
-    
-  } catch (err) {
-    console.error("/resolve error:", err);
-    res.status(500).send({ error: "Failed to resolve query", message: err.message });
+    const results = await cachedYts(query);
+    const videos = (results.videos || []).slice(0, 10).map((v) => ({
+      title: v.title,
+      url: v.url,
+      timestamp: v.timestamp,
+      author: v.author?.name || '',
+      thumbnail: v.thumbnail,
+      seconds: v.seconds || 0
+    }));
+    res.json({ results: videos });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
   }
 });
 
-app.post("/restore", async (req, res) => {
-  console.log("🔄 RESTORE command received");
-  
-  if (isPlaying || isPreparingTrack || isTransitioning) {
-    return res.send({
-      status: "already_playing",
-      nowPlaying: currentTitle,
-      queueLength: queue.length
+// Duplicate track detection helper per room
+function checkDuplicateTrack(room, newTitle, newVideoId, newUrl) {
+  const targetRoom = (room && room.id && rooms[room.id]) ? room : rooms.room1;
+  const clean = (s) => (s || '').toLowerCase().replace(/[^a-z0-9]/gi, '').trim();
+  const cTitle = clean(newTitle);
+  if (!cTitle && !newVideoId && !newUrl) return null;
+
+  const matches = (track) => {
+    if (!track) return false;
+    const tTitle = clean(track.title || track.metadata?.title);
+    const tVideoId = track.metadata?.videoId || track.videoId;
+    const tUrl = track.url || track.metadata?.url;
+
+    if (newVideoId && tVideoId && String(newVideoId).toLowerCase() === String(tVideoId).toLowerCase()) return true;
+    if (newUrl && tUrl && String(newUrl).toLowerCase() === String(tUrl).toLowerCase()) return true;
+    if (cTitle && tTitle) {
+      if (cTitle === tTitle) return true;
+      if (cTitle.length >= 8 && tTitle.length >= 8) {
+        if (cTitle.includes(tTitle) || tTitle.includes(cTitle)) return true;
+      }
+    }
+    return false;
+  };
+
+  if (targetRoom.isPlaying && targetRoom.currentTrack && matches(targetRoom.currentTrack)) {
+    return { isDuplicate: true, location: 'currently playing', track: targetRoom.currentTrack };
+  }
+
+  const qIdx = targetRoom.queue.findIndex(matches);
+  if (qIdx !== -1) {
+    return { isDuplicate: true, location: `already in queue (#${qIdx + 1})`, position: qIdx + 1, track: targetRoom.queue[qIdx] };
+  }
+
+  return null;
+}
+
+// Add Song to Queue / Play
+app.all('/play', async (req, res) => {
+  const room = getRoom(req);
+  const url = req.body?.url || req.query?.url || req.body?.q || req.query?.q;
+  const isAutoplay = req.body?.isAutoplay || req.query?.isAutoplay || false;
+  const requesterUsername = req.body?.requesterUsername || req.query?.requesterUsername;
+  const dedicatedTo = req.body?.dedicatedTo || req.query?.dedicatedTo;
+  const dedicatedBy = req.body?.dedicatedBy || req.query?.dedicatedBy;
+  const title = req.body?.title || req.query?.title;
+  const allowDuplicate = req.body?.allowDuplicate || req.query?.allowDuplicate || false;
+
+  if (!url) return res.status(400).json({ error: 'Missing "url" parameter' });
+
+  let videoUrl = url;
+  let metadata = req.body?.metadata || null;
+
+  if (!metadata) {
+    try {
+      const results = await cachedYts(url);
+      const first = results.videos?.[0];
+      if (first) {
+        videoUrl = first.url;
+        metadata = {
+          url: first.url,
+          title: first.title,
+          artist: first.author?.name || 'Unknown Artist',
+          duration: first.timestamp || 'Unknown',
+          durationSeconds: first.seconds || 0,
+          thumbnail: first.thumbnail || '',
+          videoId: first.videoId,
+          requesterUsername,
+          dedicatedTo,
+          dedicatedBy
+        };
+      }
+    } catch (_) {}
+  }
+
+  if (metadata && metadata.durationSeconds > 900) {
+    return res.status(400).json({
+      error: `Track "${metadata.title}" is too long (${metadata.duration}). Maximum allowed duration is 15 minutes.`,
+      status: 'rejected_too_long'
     });
   }
 
-  if (queue.length > 0) {
-    await playNext();
-    res.send({ 
-      status: "restored",
-      queueLength: queue.length,
-      nowPlaying: currentTitle,
-      message: "Playback restored from saved queue"
+  // Prevent duplicate tracks from being queued
+  if (!allowDuplicate) {
+    const dup = checkDuplicateTrack(room, metadata?.title || title, metadata?.videoId, videoUrl);
+    if (dup) {
+      console.log(`⚠️ [DuplicateBlocked:${room.id}] "${metadata?.title || title}" is ${dup.location}`);
+      return res.status(409).json({
+        error: `Track "${metadata?.title || title}" is ${dup.location}!`,
+        status: 'duplicate',
+        location: dup.location,
+        position: dup.position,
+        room: room.id
+      });
+    }
+  }
+
+  // If this is an autoplay request, ONLY allow it if player is idle AND queue is empty
+  if (isAutoplay && (room.isPlaying || room.isPreparing || room.queue.length > 0)) {
+    console.log(`🤖 [AutoplayBlocked:${room.id}] Blocked autoplay request for "${metadata?.title || title || url}" because player is active or queue is not empty (isPlaying=${room.isPlaying}, isPreparing=${room.isPreparing}, queueLength=${room.queue.length})`);
+    return res.json({
+      status: 'ignored',
+      message: 'Autoplay blocked: track already playing or queue not empty',
+      isPlaying: room.isPlaying,
+      queueLength: room.queue.length,
+      room: room.id
+    });
+  }
+
+  // Real user request: Purge any lingering autoplay tracks from queue so user requests always have strict precedence
+  if (!isAutoplay) {
+    const prevQueueLen = room.queue.length;
+    room.queue = room.queue.filter(item => !item?.isAutoplay);
+    if (room.queue.length !== prevQueueLen) {
+      console.log(`🧹 [Queue:${room.id}] Cleared ${prevQueueLen - room.queue.length} lingering autoplay track(s) from queue in favor of user request.`);
+    }
+  }
+
+  const songItem = {
+    url: videoUrl,
+    requestedQuery: url,
+    title: metadata?.title || title || 'Requested Track',
+    metadata: metadata || { title: title || 'Requested Track', artist: 'Unknown Artist', requesterUsername, dedicatedTo, dedicatedBy },
+    isAutoplay: Boolean(isAutoplay),
+    addedAt: Date.now()
+  };
+
+  if (room.isPlaying) {
+    room.queue.push(songItem);
+    room.saveState();
+    broadcastEvent(room, 'queue_update');
+    prefetchNextTrack(room);
+    res.json({
+      status: 'queued',
+      room: room.id,
+      position: room.queue.length,
+      url: videoUrl,
+      currentTitle: room.currentTrack?.title || '',
+      queuedTitle: songItem.title
     });
   } else {
-    res.send({
-      status: "empty",
-      message: "No saved queue to restore"
+    room.queue.push(songItem);
+    playNext(room);
+    res.json({
+      status: 'playing',
+      room: room.id,
+      url: videoUrl,
+      queuedTitle: songItem.title,
+      currentTitle: songItem.title,
+      currentMetadata: metadata
     });
   }
 });
 
-app.post("/clear", (req, res) => {
-  const clearedCount = queue.length;
-  queue = [];
-  saveQueue();
-  console.log(`🗑️ Queue cleared (${clearedCount} tracks removed)`);
-  res.send({ 
-    status: "cleared", 
-    clearedCount,
-    currentTitle 
+// Insert Song Next in Queue
+app.all('/insert', async (req, res) => {
+  const room = getRoom(req);
+  const url = req.body?.url || req.query?.url || req.body?.q || req.query?.q;
+  const title = req.body?.title || req.query?.title;
+  const allowDuplicate = req.body?.allowDuplicate || req.query?.allowDuplicate || false;
+  if (!url) return res.status(400).json({ error: 'Missing "url" parameter' });
+
+  // Real user insert: purge any lingering autoplay tracks
+  const prevQueueLen = room.queue.length;
+  room.queue = room.queue.filter(item => !item?.isAutoplay);
+  if (room.queue.length !== prevQueueLen) {
+    console.log(`🧹 [Queue:${room.id}] Cleared ${prevQueueLen - room.queue.length} lingering autoplay track(s) from queue for insert.`);
+  }
+
+  let videoUrl = url;
+  let metadata = req.body?.metadata || null;
+
+  if (!metadata) {
+    try {
+      const results = await cachedYts(url);
+      const first = results.videos?.[0];
+      if (first) {
+        videoUrl = first.url;
+        metadata = {
+          url: first.url,
+          title: first.title,
+          artist: first.author?.name || 'Unknown Artist',
+          duration: first.timestamp || 'Unknown',
+          durationSeconds: first.seconds || 0,
+          thumbnail: first.thumbnail || '',
+          videoId: first.videoId
+        };
+      }
+    } catch (_) {}
+  }
+
+  if (metadata && metadata.durationSeconds > 900) {
+    return res.status(400).json({
+      error: `Track "${metadata.title}" is too long (${metadata.duration}). Maximum allowed duration is 15 minutes.`,
+      status: 'rejected_too_long'
+    });
+  }
+
+  // Prevent duplicate tracks from being inserted
+  if (!allowDuplicate) {
+    const dup = checkDuplicateTrack(room, metadata?.title || title, metadata?.videoId, videoUrl);
+    if (dup) {
+      console.log(`⚠️ [DuplicateBlocked:${room.id}] "${metadata?.title || title}" is ${dup.location}`);
+      return res.status(409).json({
+        error: `Track "${metadata?.title || title}" is ${dup.location}!`,
+        status: 'duplicate',
+        location: dup.location,
+        position: dup.position,
+        room: room.id
+      });
+    }
+  }
+
+  const songItem = {
+    url: videoUrl,
+    requestedQuery: url,
+    title: metadata?.title || title || 'Requested Track',
+    metadata: metadata || { title: title || 'Requested Track', artist: 'Unknown Artist' },
+    isAutoplay: false,
+    addedAt: Date.now()
+  };
+
+  if (!room.isPlaying) {
+    room.queue.unshift(songItem);
+    playNext(room);
+    res.json({
+      status: 'playing',
+      room: room.id,
+      insertedTitle: songItem.title,
+      currentTitle: songItem.title,
+      position: 1
+    });
+  } else {
+    room.queue.unshift(songItem);
+    room.saveState();
+    broadcastEvent(room, 'queue_update');
+    res.json({
+      status: 'inserted',
+      room: room.id,
+      insertedTitle: songItem.title,
+      position: 1
+    });
+  }
+});
+
+// Skip to Next Song
+app.all('/next', async (req, res) => {
+  const room = getRoom(req);
+  const skippedTitle = room.currentTrack?.metadata?.title || room.currentTrack?.title || 'Current Track';
+  console.log(`⏭️ [Skip:${room.id}] Skipping "${skippedTitle}"...`);
+  await playNext(room);
+  const nextTitle = room.currentTrack?.metadata?.title || room.currentTrack?.title || null;
+  res.json({
+    status: 'ok',
+    room: room.id,
+    skippedTitle,
+    current: room.currentTrack,
+    nowPlaying: nextTitle,
+    queueLength: room.queue.length,
+    isPlaying: Boolean(room.isPlaying && room.currentTrack)
   });
 });
 
-let isPlayNextLocked = false;
-let playNextGeneration = 0;
-async function playNext() {
-  if (isPlayNextLocked) {
-    console.log("⚠️ playNext already executing, skipping duplicate concurrent invocation");
-    return;
-  }
-  const myLockId = ++playNextGeneration;
-  isPlayNextLocked = true;
+// Stop Playback
+app.all('/stop', async (req, res) => {
+  const room = getRoom(req);
+  console.log(`⏹️ [Stop:${room.id}] Stopping playback...`);
+  await stopPlayback(room);
+  res.json({ status: 'stopped', room: room.id });
+});
+
+// Resolve Query / URL metadata (used by bot autoplay & search)
+app.post('/resolve', async (req, res) => {
+  const query = req.body.query || req.body.url;
+  if (!query) return res.status(400).json({ error: 'Missing query parameter' });
+
   try {
-    while (true) {
-      const next = queue.shift();
-      saveQueue();
-      console.log("playNext called. Next item:", next);
+    const results = await cachedYts(query);
+    const first = results.videos?.[0];
+    if (!first) return res.status(404).json({ error: 'No results found', query });
 
-      if (!next) {
-        isPreparingTrack = false;
-        isTransitioning = false;
-        softStopPlayback();
+    const metadata = {
+      url: first.url,
+      title: first.title,
+      artist: first.author?.name || 'Unknown Artist',
+      duration: first.timestamp || 'Unknown',
+      durationSeconds: first.seconds || 0,
+      thumbnail: first.thumbnail || '',
+      videoId: first.videoId
+    };
 
-        // If a song was added to the queue while stopping, loop cleanly instead of recursing while locked
-        if (queue.length > 0) {
-          console.log("⚠️ Song was queued while stopping. Resuming playback!");
-          continue;
-        }
-        return;
-      }
-
-      isPreparingTrack = true;
-      isTransitioning = true;
-      isPlaying = false;
-
-      if (typeof next === 'string') {
-        currentIsAutoplay = false;
-        await startStream(next);
-      } else {
-        currentIsAutoplay = next.isAutoplay || false;
-        await startStream(next.url, next.metadata?.title, next.metadata);
-      }
-      return;
-    }
+    res.json({ status: 'resolved', metadata });
   } catch (err) {
-    console.error("❌ Error in playNext:", err.message);
-    isPreparingTrack = false;
-    isTransitioning = false;
-    softStopPlayback();
-    setTimeout(() => {
-      if (!isPlaying && !isTransitioning && !isPreparingTrack && queue.length > 0) playNext();
-    }, 2000);
-  } finally {
-    if (playNextGeneration === myLockId) {
-      isPlayNextLocked = false;
-    }
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Restore Playback
+app.post('/restore', async (req, res) => {
+  const room = getRoom(req);
+  if (room.isPlaying) {
+    return res.json({
+      status: 'already_playing',
+      room: room.id,
+      nowPlaying: room.currentTrack?.title || '',
+      queueLength: room.queue.length
+    });
+  }
+
+  if (room.queue.length > 0) {
+    playNext(room);
+    return res.json({
+      status: 'restored',
+      room: room.id,
+      queueLength: room.queue.length,
+      message: 'Playback restored from saved queue'
+    });
+  }
+
+  res.json({ status: 'empty', room: room.id, message: 'No saved queue to restore' });
+});
+
+// Volume Control
+app.get('/volume', (req, res) => {
+  const room = getRoom(req);
+  res.json({ room: room.id, volume: room.currentVolume });
+});
+app.post('/volume', async (req, res) => {
+  const room = getRoom(req);
+  const vol = Math.max(0, Math.min(150, Number(req.body.volume) || 100));
+  room.currentVolume = vol;
+  await callAudioServer(room, '/volume', { volume: room.currentVolume });
+  broadcastEvent(room, 'volume_change');
+  res.json({ status: 'ok', room: room.id, volume: room.currentVolume });
+});
+
+// Announcements Configuration
+app.get('/announcements', (req, res) => {
+  const room = getRoom(req);
+  res.json({
+    room: room.id,
+    enabled: room.announcementsEnabled,
+    voice: room.announcementVoice
+  });
+});
+app.post('/announcements', (req, res) => {
+  const room = getRoom(req);
+  if (req.body.enabled !== undefined) room.announcementsEnabled = Boolean(req.body.enabled);
+  if (req.body.voice) room.announcementVoice = String(req.body.voice);
+  broadcastEvent(room, 'announcements_change');
+  res.json({ status: 'ok', room: room.id, enabled: room.announcementsEnabled, voice: room.announcementVoice });
+});
+
+// Clear Queue
+app.post('/clear', (req, res) => {
+  const room = getRoom(req);
+  room.queue = [];
+  room.saveState();
+  broadcastEvent(room, 'queue_cleared');
+  res.json({ status: 'cleared', room: room.id });
+});
+
+// Health Status — non-blocking: respond immediately with summary for all rooms
+app.get('/health', (req, res) => {
+  const roomSummary = {};
+  for (const [id, r] of Object.entries(rooms)) {
+    roomSummary[id] = {
+      isPlaying: r.isPlaying,
+      isPreparing: r.isPreparing,
+      queueLength: r.queue.length,
+      currentTrack: r.currentTrack?.title || null
+    };
+  }
+  res.json({
+    status: 'healthy',
+    controllerUptime: Math.floor(process.uptime()),
+    rooms: roomSummary
+  });
+});
+
+// Probes all audio servers' health
+app.get('/api/audio-health', async (req, res) => {
+  const results = {};
+  for (const [id, r] of Object.entries(rooms)) {
+    results[id] = await callAudioServer(r, '/health', {}, 'GET');
+  }
+  res.json({
+    status: 'healthy',
+    controllerUptime: Math.floor(process.uptime()),
+    audioServers: results
+  });
+});
+
+// Admin Login
+app.post('/api/login', loginLimiter, (req, res) => {
+  const { password } = req.body || {};
+  if (typeof password === 'string' && password && timingSafeCompare(password, ADMIN_PASSWORD)) {
+    req.session.authenticated = true;
+    return res.json({ success: true, authenticated: true, message: 'Authenticated' });
+  }
+  res.status(401).json({ success: false, error: 'Invalid password' });
+});
+
+// Helper to communicate with Python Bot via local IPC (port 5001)
+async function callBotIPC(endpoint, method = 'GET', body = null) {
+  try {
+    const opts = {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        'X-IPC-Secret': IPC_SECRET
+      },
+      signal: AbortSignal.timeout(8000)
+    };
+    if (body) opts.body = JSON.stringify(body);
+    const res = await fetch(`${BOT_IPC_URL}${endpoint}`, opts);
+    return await res.json();
+  } catch (err) {
+    return { error: 'Failed to communicate with bot process', message: err.message };
   }
 }
 
-app.get(["/stream", "/STREAM"], (req, res) => {
-  if (streamManager.isAtClientLimit()) {
-    return res.status(503).send({ error: "Maximum stream listener capacity reached" });
-  }
-
-  if (res.socket) {
-    res.socket.setNoDelay(true);
-  }
-  
-  res.writeHead(200, {
-    "Content-Type": "audio/mpeg",
-    "Cache-Control": "no-cache, no-store, must-revalidate, max-age=0",
-    "Pragma": "no-cache",
-    "Expires": "0",
-    "Connection": "keep-alive",
-    "Access-Control-Allow-Origin": "*",
-    "X-Accel-Buffering": "no",
-    "X-Stream-Version": String(streamVersion),
-    "X-Stream-Live": "true",
-    "icy-name": "Highrise Music Stream",
-    "icy-br": audioBitrate.replace('k', ''),
-    "icy-pub": "1"
-  });
-
-  streamManager.addClient(res, req);
-});
-
-const ALLOWED_IPC_COMMANDS = new Set([
-  'kick', 'teleport', 'say', 'restart', 'roster', 'terminal', 'access',
-  'economy', 'mode', 'stats', 'playlists', 'outfits', 'locations',
-  'shop', 'history', 'broadcast'
-]);
-
-app.post("/api/bot-command", async (req, res) => {
-  try {
-    const { command, ...data } = req.body || {};
-    if (typeof command !== "string" || !ALLOWED_IPC_COMMANDS.has(command)) {
-      return res.status(400).send({ error: "Invalid or disallowed command" });
-    }
-    
-    // Server-side validation for moderation commands
-    if (command === "kick" || command === "teleport") {
-      if (!data.userId || typeof data.userId !== "string") {
-        return res.status(400).send({ error: "userId is required for this command" });
-      }
-      
-      // Fetch roster to validate user exists
-      const rosterRes = await fetch(`http://127.0.0.1:5001/api/roster`, {
-        headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-        signal: AbortSignal.timeout(8000)
-      });
-      const rosterData = await rosterRes.json();
-      
-      const userExists = rosterData.users?.some(u => u.id === data.userId || u.username.toLowerCase() === data.userId.toLowerCase());
-      if (!userExists) {
-        return res.status(404).send({ error: "User is not currently in the room." });
-      }
-      
-      // If they provided a username, map it to ID for the bot
-      if (userExists) {
-        const matchedUser = rosterData.users.find(u => u.id === data.userId || u.username.toLowerCase() === data.userId.toLowerCase());
-        data.userId = matchedUser.id; // Force using the ID
-      }
-      
-      // Validate teleport coords
-      if (command === "teleport") {
-        data.x = parseFloat(data.x) || 0;
-        data.y = parseFloat(data.y) || 0;
-        data.z = parseFloat(data.z) || 0;
-      }
-    }
-    
-    const response = await fetch(`http://127.0.0.1:5001/api/${command}`, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "X-IPC-Secret": process.env.IPC_SECRET
-      },
-      body: JSON.stringify(data),
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to communicate with bot process" });
-  }
-});
-
-app.get("/api/config", (req, res) => {
-  res.send({
+// ==========================================
+// 📊 DASHBOARD MANAGEMENT API ROUTES
+// ==========================================
+app.get('/api/config', (req, res) => {
+  res.json({
     roomIdSet: !!process.env.ROOM_ID,
     apiTokenSet: !!process.env.API_TOKEN,
-    port: process.env.PORT || 30191
+    port: PORT
   });
 });
 
-app.post("/api/config", (req, res) => {
-  try {
-    const { ROOM_ID, API_TOKEN } = req.body || {};
-    const hasInvalidEnvChars = (val) => typeof val !== "string" || /[\r\n=\0]/.test(val);
-    if (ROOM_ID !== undefined && ROOM_ID !== null && ROOM_ID !== "" && hasInvalidEnvChars(ROOM_ID)) {
-      return res.status(400).send({ error: "Invalid ROOM_ID: newline, carriage return, and '=' characters are not allowed." });
-    }
-    if (API_TOKEN !== undefined && API_TOKEN !== null && API_TOKEN !== "" && hasInvalidEnvChars(API_TOKEN)) {
-      return res.status(400).send({ error: "Invalid API_TOKEN: newline, carriage return, and '=' characters are not allowed." });
-    }
-
-    const envPath = fs.existsSync('.env') ? '.env' : path.join(__dirname, '.env');
-    let envContent = fs.readFileSync(envPath, 'utf8');
-    if (ROOM_ID) {
-      envContent = envContent.replace(/ROOM_ID=.*/g, () => `ROOM_ID=${ROOM_ID}`);
-    }
-    if (API_TOKEN) {
-      envContent = envContent.replace(/API_TOKEN=.*/g, () => `API_TOKEN=${API_TOKEN}`);
-    }
-    fs.writeFileSync(envPath, envContent);
-    res.send({ status: "success", message: "Config saved. Restart required." });
-  } catch (e) {
-    res.status(500).send({ error: e.message });
-  }
+app.get('/api/stats', async (req, res) => {
+  const result = await callBotIPC('/api/stats');
+  res.json(result);
 });
 
-app.get("/api/access", (req, res) => {
+app.get('/api/playlists', async (req, res) => {
+  const result = await callBotIPC('/api/playlists');
+  res.json(result);
+});
+
+app.get('/api/outfits', async (req, res) => {
+  const result = await callBotIPC('/api/outfits');
+  res.json(result);
+});
+
+app.get('/api/locations', async (req, res) => {
+  const result = await callBotIPC('/api/locations');
+  res.json(result);
+});
+
+app.get('/api/shop', async (req, res) => {
+  const q = req.query.q || '';
+  const result = await callBotIPC(`/api/shop?q=${encodeURIComponent(q)}`);
+  res.json(result);
+});
+
+app.get('/api/history', async (req, res) => {
+  const result = await callBotIPC('/api/history');
+  res.json(result);
+});
+
+app.get('/api/roster', async (req, res) => {
+  const result = await callBotIPC('/api/roster');
+  res.json(result);
+});
+
+app.get('/api/economy', async (req, res) => {
+  const result = await callBotIPC('/api/economy');
+  res.json(result);
+});
+
+app.post('/api/economy', async (req, res) => {
+  const result = await callBotIPC('/api/economy', 'POST', req.body);
+  res.json(result);
+});
+
+app.get('/api/access', (req, res) => {
   try {
-    const adminsPath = path.join(__dirname, "systems/admin/data/admins.json");
+    const adminsPath = path.join(__dirname, '..', 'bot', 'systems', 'admin', 'data', 'admins.json');
     if (fs.existsSync(adminsPath)) {
-      const data = JSON.parse(fs.readFileSync(adminsPath, 'utf8'));
-      res.send(data);
-    } else {
-      res.send({ admins: [], vips: [], owner: "" });
+      return res.json(JSON.parse(fs.readFileSync(adminsPath, 'utf8')));
     }
+    res.json({ admins: [], vips: [], owner: '' });
   } catch (e) {
-    res.status(500).send({ error: e.message });
+    res.json({ admins: [], vips: [], owner: '' });
   }
 });
 
-app.post("/api/access", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/access`, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "X-IPC-Secret": process.env.IPC_SECRET
-      },
-      body: JSON.stringify(req.body),
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to communicate with bot process" });
-  }
+app.post('/api/access', async (req, res) => {
+  const result = await callBotIPC('/api/access', 'POST', req.body);
+  res.json(result);
 });
 
-app.get("/api/economy", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/economy`, {
-      method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to get economy data" });
-  }
+app.post('/api/terminal', async (req, res) => {
+  const result = await callBotIPC('/api/terminal', 'POST', req.body);
+  res.json(result);
 });
 
-app.post("/api/economy", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/economy`, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "X-IPC-Secret": process.env.IPC_SECRET
-      },
-      body: JSON.stringify(req.body),
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to update economy data" });
-  }
+app.post('/api/mode', async (req, res) => {
+  const result = await callBotIPC('/api/mode', 'POST', req.body);
+  res.json(result);
 });
 
-app.post("/api/terminal", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/terminal`, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "X-IPC-Secret": process.env.IPC_SECRET
-      },
-      body: JSON.stringify(req.body),
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to execute terminal command" });
-  }
-});
-
-app.post("/api/mode", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/mode`, {
-      method: "POST",
-      headers: { 
-        "Content-Type": "application/json",
-        "X-IPC-Secret": process.env.IPC_SECRET
-      },
-      body: JSON.stringify(req.body),
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to change mode" });
-  }
-});
-
-app.delete("/api/queue/:index", (req, res) => {
-  const index = /^\d+$/.test(req.params.index) ? parseInt(req.params.index, 10) : NaN;
-  if (isNaN(index) || index < 0 || index >= queue.length) {
-    return res.status(400).send({ error: "Invalid queue index" });
-  }
-  const removed = queue.splice(index, 1);
-  saveQueue();
-  broadcastEvent();
-  res.send({ status: "success", removed: removed[0]?.metadata?.title || 'Track' });
-});
-
-app.get("/api/stats", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/stats`, {
-      method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to get stats" });
-  }
-});
-
-app.get("/api/playlists", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/playlists`, {
-      method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to get playlists" });
-  }
-});
-
-app.get("/api/outfits", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/outfits`, {
-      method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to get outfits" });
-  }
-});
-
-app.get("/api/locations", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/locations`, {
-      method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to get locations" });
-  }
-});
-
-app.get("/api/shop", async (req, res) => {
-  try {
-    const q = req.query.q || '';
-    const response = await fetch(`http://127.0.0.1:5001/api/shop?q=${encodeURIComponent(q)}`, {
-      method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to query shop" });
-  }
-});
-
-app.get("/api/history", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/history`, {
-      method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to query history" });
-  }
-});
-
-// Duplicate /api/bot-command removed; primary handler with moderation active
-
-app.post("/api/broadcast", (req, res) => {
+app.post('/api/broadcast', (req, res) => {
   if (req.body) {
-    broadcastEventJSON(req.body);
+    const eventType = req.body.type || 'chat';
+    broadcastEvent(eventType, req.body);
   }
-  res.send({ success: true });
+  res.json({ success: true });
 });
 
-app.get("/api/roster", async (req, res) => {
-  try {
-    const response = await fetch(`http://127.0.0.1:5001/api/roster`, {
-      method: "GET",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    });
-    const result = await response.json();
-    res.status(response.status).send(result);
-  } catch (e) {
-    res.status(500).send({ error: "Failed to get roster" });
+app.delete('/api/queue/:index', (req, res) => {
+  const room = getRoom(req);
+  const idx = parseInt(req.params.index, 10);
+  if (isNaN(idx) || idx < 0 || idx >= room.queue.length) {
+    return res.status(400).json({ error: 'Invalid queue index' });
   }
+  const removed = room.queue.splice(idx, 1);
+  room.saveState();
+  broadcastEvent(room, 'queue_update');
+  res.json({ status: 'success', room: room.id, removed: removed[0]?.title });
 });
 
-app.post("/api/restart", async (req, res) => {
-  console.log("🔄 FULL RESTART command received");
-  
-  res.send({ 
-    status: "restarting",
-    message: "System is restarting...",
-    timestamp: Date.now()
-  });
-  
-  savePlaybackState();
-  saveQueue();
-  
-  try {
-    // Try to restart Python bot via IPC
-    await fetch(`http://127.0.0.1:5001/api/restart`, {
-      method: "POST",
-      headers: { "X-IPC-Secret": process.env.IPC_SECRET },
-      signal: AbortSignal.timeout(8000)
-    }).catch(e => null);
-  } catch(e) {}
-  
-  setTimeout(() => {
-    process.exit(1);
-  }, 500);
-});
+// ==========================================
+// 🤖 HIGHRISE BOT API COMPATIBILITY
+// ==========================================
+app.post('/api/bot-command', async (req, res) => {
+  const room = getRoom(req);
+  const { command, args, user, metadata, message, userId, x, y, z } = req.body;
+  console.log(`🤖 [BotCommand:${room.id}] ${user?.username || 'Dashboard/User'}: ${command} ${args || ''}`);
 
-queue = loadQueue();
-const playbackState = loadPlaybackState();
-
-streamManager.startPersistentEncoder();
-
-const healthCheckInterval = setInterval(() => {
-  if (isShuttingDown) return;
-  const health = streamManager.getHealthStatus();
-  if (!health.encoderAlive) {
-    console.error('⚠️ Health check: Encoder not alive, restarting...');
-    streamManager.startPersistentEncoder();
-  }
-}, 30000);
-
-// Periodic memory maintenance: sweep expired cache and invoke GC if exposed
-const memoryMaintenanceInterval = setInterval(() => {
-  const now = Date.now();
-  for (const [key, val] of metadataCache.entries()) {
-    if (now - val.timestamp > CACHE_TTL) {
-      metadataCache.delete(key);
-    }
-  }
-  if (typeof global.gc === 'function') {
+  if (command === 'play') {
+    const query = args || req.body.url || req.body.query;
+    if (!query) return res.json({ response: 'Please specify a song title or URL!' });
     try {
-      global.gc();
-    } catch (e) {}
-  }
-}, 5 * 60 * 1000);
+      const results = await cachedYts(query);
+      const first = results.videos?.[0];
+      if (!first) return res.json({ response: 'No song found for that query!' });
 
+      if (first.seconds && first.seconds > 900) {
+        return res.json({ response: `Song is too long (${first.timestamp}). Maximum duration is 15 minutes.`, status: 'rejected_too_long' });
+      }
 
-// 🛡️ Memory Guard - Periodically check memory without stalling the audio thread
-const memoryGuardInterval = setInterval(() => {
-  const mem = process.memoryUsage();
-  const rssMb = (mem.rss / 1024 / 1024).toFixed(1);
-  const heapMb = (mem.heapUsed / 1024 / 1024).toFixed(1);
-  // Only trigger GC and cache cleanup if memory is critically high (> 220MB RSS or > 95MB heap — tuned for 128MB V8 cap)
-  if (mem.rss > 220 * 1024 * 1024 || mem.heapUsed > 95 * 1024 * 1024) {
-    console.warn(`⚠️ [MemoryGuard] Critically elevated Node memory: RSS ${rssMb}MB, Heap ${heapMb}MB - running cleanup...`);
-    pruneStaleCacheFiles(currentLocalFilePath);
-    if (typeof global.gc === 'function') {
-      try {
-        global.gc();
-      } catch (e) {}
-    }
-  }
-}, 120000);
-
-// 🧹 Periodic Disk Cache Guardian (Every 10 min: TTL purge TTS, LRU evict songs, keep size <= MAX_CACHE_SIZE_BYTES)
-const cacheGuardianInterval = setInterval(async () => {
-  try {
-    await enforceGlobalCacheLimit();
-  } catch (e) {
-    console.warn("⚠️ [Cache Maintenance] Periodic sweep error:", e.message);
-  }
-}, 10 * 60 * 1000);
-
-// registerLiveLogs(app); disabled for CPU optimization
-
-const rawPort = process.env.PORT || process.env.SERVER_PORT || 30191;
-const PORT = parseInt(String(rawPort).trim(), 10) || 30191;
-let activeHttpServer = null;
-let keepAliveInterval = null;
-let isShuttingDown = false;
-
-function listenWithRetry(port, retriesLeft = 10) {
-  const server = app.listen(port, "0.0.0.0", async () => {
-    await ensureYtDlp();
-
-    // Self-healing disk cache enforcement on startup
-    try {
-      await enforceGlobalCacheLimit();
-    } catch (e) {
-      console.warn("⚠️ [Cache Startup] Initial sweep error:", e.message);
-    }
-
-    console.log(`🚀 Music server running on port ${port}`);
-    console.log("📡 Persistent streaming architecture active!");
-    console.log("🔧 FFmpeg encoder runs continuously - no disconnections between songs");
-    
-    if (playbackState.isPlaying && playbackState.currentTitle && playbackState.currentMetadata) {
-      console.log(`🔄 Restoring previously playing song: ${playbackState.currentTitle}`);
-      
-      const restoredVideoId = playbackState.currentMetadata.videoId;
-      const alreadyInQueue = queue.some(item => 
-        item.metadata?.videoId === restoredVideoId || 
-        item.url === playbackState.currentMetadata.url
-      );
-      
-      if (alreadyInQueue) {
-        console.log(`⚠️ Song already in queue, not adding duplicate`);
-        const existingIndex = queue.findIndex(item => 
-          item.metadata?.videoId === restoredVideoId || 
-          item.url === playbackState.currentMetadata.url
-        );
-        if (existingIndex > 0) {
-          const [existingSong] = queue.splice(existingIndex, 1);
-          queue.unshift(existingSong);
-          console.log(`↩️ Moved existing song to front of queue`);
-        }
-      } else {
-        queue.unshift({
-          url: playbackState.currentMetadata.url,
-          metadata: playbackState.currentMetadata,
-          isAutoplay: playbackState.currentIsAutoplay || false
+      // Check duplicate
+      const dup = checkDuplicateTrack(room, first.title, first.videoId, first.url);
+      if (dup) {
+        return res.json({
+          response: `⚠️ "${first.title}" is already ${dup.location}!`,
+          status: 'duplicate',
+          title: first.title,
+          room: room.id
         });
-        console.log(`✅ Restored 1 songs from previous session`);
       }
-      saveQueue();
+
+      const songItem = {
+        url: first.url,
+        title: first.title,
+        metadata: {
+          url: first.url,
+          title: first.title,
+          artist: first.author?.name || 'Unknown Artist',
+          duration: first.timestamp || 'Unknown',
+          durationSeconds: first.seconds || 0,
+          thumbnail: first.thumbnail || '',
+          videoId: first.videoId,
+          requesterUsername: user?.username || 'Highrise Player',
+          ...metadata
+        },
+        addedAt: Date.now()
+      };
+
+      if (!room.isPlaying) {
+        room.queue.push(songItem);
+        playNext(room);
+        return res.json({ response: `Now playing: ${first.title}`, status: 'playing', title: first.title, room: room.id });
+      } else {
+        room.queue.push(songItem);
+        room.saveState();
+        broadcastEvent(room, 'queue_update');
+        return res.json({ response: `Added to queue (#${room.queue.length}): ${first.title}`, status: 'queued', title: first.title, room: room.id });
+      }
+    } catch (e) {
+      return res.json({ response: `Error searching for song: ${e.message}`, error: e.message });
     }
-    
-    if (queue.length > 0) {
-      console.log(`📋 Queue has ${queue.length} songs ready to play`);
-      console.log("▶️ Auto-starting playback from saved queue...");
-      
-      setTimeout(() => {
-        if (!isShuttingDown) playNext();
-      }, 2000);
-    }
-  });
-
-  activeHttpServer = server;
-  server.keepAliveTimeout = 120000;
-  server.headersTimeout = 125000;
-  server.timeout = 0;
-
-  server.on("error", (err) => {
-    if (err.code === "EADDRINUSE" && retriesLeft > 0 && !isShuttingDown) {
-      console.log(`⚠️ Port ${port} is in use (socket releasing). Retrying in 3 seconds... (${retriesLeft} retries left)`);
-      setTimeout(() => {
-        if (!isShuttingDown) listenWithRetry(port, retriesLeft - 1);
-      }, 3000);
-    } else {
-      console.error("❌ Music server error:", err);
-    }
-  });
-}
-
-listenWithRetry(PORT);
-
-
-// ============================================================================
-// 🛡️ Render 24/7 Keep-Alive Sentinel (Prevents Free-Tier Inactivity Sleep)
-// ============================================================================
-function armRenderKeepAlive() {
-  const externalUrl = process.env.RENDER_EXTERNAL_URL || process.env.PUBLIC_URL;
-  if (!externalUrl || externalUrl.includes('127.0.0.1') || externalUrl.includes('localhost')) {
-    return;
   }
 
-  const pingEndpoint = externalUrl.replace(/\/+$/, '') + '/ping';
-  console.log(`🛡️ [Keep-Alive Sentinel] Armed 24/7 anti-sleep pinger -> ${pingEndpoint}`);
-
-  // Ping every 7 minutes (Render free tier spins down after 15 minutes of no HTTP traffic)
-  keepAliveInterval = setInterval(async () => {
-    try {
-      const res = await fetch(pingEndpoint, { 
-        headers: { 'User-Agent': 'MusicEngine-KeepAlive/1.0' },
-        signal: AbortSignal.timeout(10000)
-      });
-      if (res.ok) {
-        console.log(`💓 [Keep-Alive Sentinel] Ping successful at ${new Date().toISOString().slice(11, 19)} (Render sleep timer reset)`);
-      }
-    } catch (err) {
-      console.warn(`⚠️ [Keep-Alive Sentinel] Ping attempt failed: ${err.message}`);
-    }
-  }, 7 * 60 * 1000);
-}
-
-armRenderKeepAlive();
-
-async function gracefulShutdown(signal) {
-  if (isShuttingDown) return;
-  isShuttingDown = true;
-  console.log(`🛑 [Shutdown] Received ${signal}, flushing state and stopping child processes...`);
-
-  const forceExitTimer = setTimeout(() => {
-    console.error('⚠️ [Shutdown] Force exiting after 5s timeout');
-    process.exit(1);
-  }, 5000);
-  forceExitTimer.unref();
-
-  clearInterval(healthCheckInterval);
-  clearInterval(memoryMaintenanceInterval);
-  clearInterval(memoryGuardInterval);
-  clearInterval(cacheGuardianInterval);
-  if (keepAliveInterval) {
-    clearInterval(keepAliveInterval);
-    keepAliveInterval = null;
+  if (command === 'skip' || command === 'next') {
+    const skippedTitle = room.currentTrack?.metadata?.title || room.currentTrack?.title || 'Track';
+    console.log(`⏭️ [BotCommand:${room.id}] Skipping "${skippedTitle}"...`);
+    await playNext(room);
+    return res.json({ response: room.currentTrack ? `Skipped! Now playing: ${room.currentTrack.title}` : 'Queue is empty.', skippedTitle, room: room.id });
   }
 
-  await flushState();
+  if (command === 'stop') {
+    console.log(`⏹️ [BotCommand:${room.id}] Stopping playback...`);
+    await stopPlayback(room);
+    return res.json({ response: 'Playback stopped.', status: 'stopped', room: room.id });
+  }
 
+  if (command === 'queue') {
+    if (room.queue.length === 0) return res.json({ response: 'The queue is currently empty.', room: room.id });
+    const list = room.queue.slice(0, 5).map((s, i) => `${i + 1}. ${s.title}`).join('\n');
+    return res.json({ response: `Next up:\n${list}`, room: room.id });
+  }
+
+  if (command === 'say') {
+    const sayMsg = message || args || '';
+    const ipcRes = await callBotIPC('/api/say', 'POST', { message: sayMsg });
+    return res.json(ipcRes);
+  }
+
+  if (command === 'kick') {
+    const targetId = userId || args || '';
+    const ipcRes = await callBotIPC('/api/kick', 'POST', { userId: targetId });
+    return res.json(ipcRes);
+  }
+
+  if (command === 'teleport') {
+    const targetId = userId || '';
+    const ipcRes = await callBotIPC('/api/teleport', 'POST', { userId: targetId, x, y, z });
+    return res.json(ipcRes);
+  }
+
+  // Forward all other commands (outfits, emotes, follow, setmusicbot, buy, etc.) to Bot IPC
   try {
-    killCurrentStream();
-  } catch (_) {}
-
-  if (activeTtsDecoder && !activeTtsDecoder.killed) {
-    try {
-      if (activeTtsDecoder.stdin && !activeTtsDecoder.stdin.destroyed) activeTtsDecoder.stdin.destroy();
-      if (activeTtsDecoder.stdout && !activeTtsDecoder.stdout.destroyed) activeTtsDecoder.stdout.destroy();
-      activeTtsDecoder.kill('SIGKILL');
-    } catch (_) {}
-    activeTtsDecoder = null;
+    const ipcRes = await callBotIPC('/api/bot-command', 'POST', req.body);
+    return res.json(ipcRes);
+  } catch (err) {
+    return res.status(500).json({ error: 'Failed to dispatch bot command', message: err.message });
   }
+});
 
-  try {
-    streamManager.shutdown();
-  } catch (_) {}
-
-  if (broadcastTimeout) {
-    clearTimeout(broadcastTimeout);
-    broadcastTimeout = null;
-  }
-  for (const client of sseClients) {
-    try {
-      client.end();
-      if (typeof client.destroy === 'function') client.destroy();
-    } catch (_) {}
-  }
-  sseClients.clear();
-
-  if (activeHttpServer) {
-    try {
-      if (typeof activeHttpServer.closeAllConnections === 'function') {
-        activeHttpServer.closeAllConnections();
-      }
-      await new Promise((resolve) => activeHttpServer.close(() => resolve()));
-    } catch (_) {}
-    activeHttpServer = null;
-  }
-
-  clearTimeout(forceExitTimer);
-  console.log('✅ [Shutdown] Clean shutdown complete');
-  process.exit(0);
-}
-
-process.on('SIGINT', () => { gracefulShutdown('SIGINT'); });
-process.on('SIGTERM', () => { gracefulShutdown('SIGTERM'); });
+// Start Server
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`
+╔═══════════════════════════════════════════════════════════════╗
+║          🎮 MULTI-ROOM HIGHRISE MAIN CONTROLLER ACTIVE        ║
+╠═══════════════════════════════════════════════════════════════╣
+║  Port:             ${PORT}                                       ║
+║  Dashboard URL:    http://localhost:${PORT}/                     ║
+║  Rooms Active:     ${Object.keys(rooms).join(', ')}                     ║
+║  Room 1 Audio:     ${rooms.room1?.audioServerUrl}            ║
+║  Room 2 Audio:     ${rooms.room2?.audioServerUrl}            ║
+║  Status:           Connected & Ready                          ║
+╚═══════════════════════════════════════════════════════════════╝
+  `);
+});
