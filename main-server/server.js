@@ -2170,6 +2170,17 @@ async function searchYouTube(query) {
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
+  // Primary: fast YouTube InnerTube API (<1s; avoids yt-search datacenter IP hangs)
+  try {
+    const innerResult = await searchYouTubeViaInnerTube(query, 5000);
+    if (innerResult) {
+      setCache(cacheKey, innerResult);
+      return innerResult;
+    }
+  } catch (err) {
+    console.warn("⚠️ InnerTube search failed, trying yt-search fallback:", err.message);
+  }
+
   try {
     const results = await ytsWithTimeout(query, 4500);
     if (results.videos && results.videos.length > 0) {
@@ -2188,19 +2199,9 @@ async function searchYouTube(query) {
       setCache(cacheKey, result);
       return result;
     }
-  } catch (err) {
-    console.warn("⚠️ yt-search failed, trying InnerTube fallback:", err.message);
-  }
-
-  try {
-    const fallbackResult = await searchYouTubeViaInnerTube(query, 5000);
-    if (fallbackResult) {
-      setCache(cacheKey, fallbackResult);
-      return fallbackResult;
-    }
     return null;
   } catch (err) {
-    console.error("YouTube search error (InnerTube fallback):", err.message);
+    console.error("YouTube search error (yt-search fallback):", err.message);
     logError('searchYouTube', err, { query });
     return null;
   }
