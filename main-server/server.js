@@ -2100,13 +2100,27 @@ function setCache(key, data) {
   }
 }
 
+async function ytsWithTimeout(arg, timeoutMs = 8000) {
+  let timer = null;
+  try {
+    return await Promise.race([
+      yts(arg),
+      new Promise((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`yt-search timed out after ${timeoutMs}ms`)), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function searchYouTube(query) {
   const cacheKey = `search:${query}`;
   const cached = getCached(cacheKey);
   if (cached) return cached;
 
   try {
-    const results = await yts(query);
+    const results = await ytsWithTimeout(query, 8000);
     if (results.videos && results.videos.length > 0) {
       const video = results.videos[0];
       const result = {
@@ -2146,7 +2160,7 @@ async function getVideoMetadata(url) {
     }
     
     if (videoId) {
-      const results = await yts({ videoId: videoId });
+      const results = await ytsWithTimeout({ videoId: videoId }, 8000);
       if (results && results.title) {
         const metaResult = {
           url: url,
@@ -3140,7 +3154,7 @@ app.post("/play", async (req, res) => {
       
       if (videoId) {
         try {
-          const results = await yts({ videoId: videoId });
+          const results = await ytsWithTimeout({ videoId: videoId }, 8000);
           if (results && results.title) {
             metadata = {
               url: url,
@@ -3583,7 +3597,7 @@ app.post("/resolve", async (req, res) => {
       
       if (videoId) {
         try {
-          const results = await yts({ videoId: videoId });
+          const results = await ytsWithTimeout({ videoId: videoId }, 8000);
           if (results && results.title) {
             metadata = {
               url: query,
