@@ -1,6 +1,5 @@
 import express from "express";
 import { spawn, execSync, exec } from "child_process";
-import ffmpeg from "fluent-ffmpeg";
 import { PassThrough, Readable } from "stream";
 import yts from "yt-search";
 import fs from "fs";
@@ -103,8 +102,6 @@ function getFFmpegPath() {
   console.log(`🎬 Falling back to 'ffmpeg' from PATH`);
   return resolvedFfmpegPath;
 }
-
-ffmpeg.setFfmpegPath(getFFmpegPath());
 
 // Serve static dashboard files with browser cache to eliminate repeat disk I/O and CPU
 app.use(express.static(path.join(__dirname, "public"), { maxAge: "1d", etag: true }));
@@ -673,8 +670,16 @@ async function ensureYtDlp() {
       return false;
     }
     
-    const buffer = await response.buffer();
-    fs.writeFileSync(YTDLP_PATH, buffer);
+    // Stream to disk instead of buffering entire binary in memory
+    const tmpPath = YTDLP_PATH + '.tmp';
+    const fileStream = fs.createWriteStream(tmpPath);
+    await new Promise((resolve, reject) => {
+      response.body.pipe(fileStream);
+      response.body.on('error', reject);
+      fileStream.on('finish', resolve);
+      fileStream.on('error', reject);
+    });
+    fs.renameSync(tmpPath, YTDLP_PATH);
     if (!isWindows) {
       try { fs.chmodSync(YTDLP_PATH, 0o755); } catch (e) {}
     }
@@ -807,7 +812,14 @@ async function generateTTSAudio(text) {
       throw new Error(`TTS fetch failed: ${response.status}`);
     }
     
-    const audioBuffer = await response.buffer();
+    // Stream to memory buffer via pipeline to avoid allocating response.buffer() internals
+    const chunks = [];
+    await new Promise((resolve, reject) => {
+      response.body.on('data', chunk => chunks.push(chunk));
+      response.body.on('end', resolve);
+      response.body.on('error', reject);
+    });
+    const audioBuffer = Buffer.concat(chunks);
     console.log(`✅ TTS audio fetched (${(audioBuffer.length / 1024).toFixed(1)} KB)`);
     
     return audioBuffer;
@@ -1250,16 +1262,6 @@ class PersistentStreamManager {
     return true;
   }
   
-  generateSilenceChunk() {
-    const frames = [];
-    for (let i = 0; i < 10; i++) {
-      const frameHeader = Buffer.from([0xFF, 0xFB, 0x90, 0x00]);
-      const frameData = Buffer.alloc(413, 0);
-      frames.push(Buffer.concat([frameHeader, frameData]));
-    }
-    return Buffer.concat(frames);
-  }
-  
   isAtClientLimit() {
     if (this.clients.size >= this.maxClients) {
       for (const client of this.clients) {
@@ -1539,7 +1541,13 @@ function logError(functionName, error, additionalContext = {}) {
     if (!fs.existsSync(logsDir)) {
       fs.mkdirSync(logsDir, { recursive: true });
     }
-    
+    // Rotate log if it exceeds 2 MB to prevent unbounded disk growth
+    try {
+      const stat = fs.statSync(ERROR_LOG_FILE);
+      if (stat.size > 2 * 1024 * 1024) {
+        fs.renameSync(ERROR_LOG_FILE, ERROR_LOG_FILE + '.1');
+      }
+    } catch (_) {}
     fs.appendFileSync(ERROR_LOG_FILE, logEntry, 'utf8');
     console.error(`❌ Error logged to ${ERROR_LOG_FILE}: ${errorMessage}`);
   } catch (writeError) {
@@ -3729,135 +3737,6 @@ app.get(["/stream", "/STREAM"], (req, res) => {
   streamManager.addClient(res, req);
 });
 
-app.get("/", (req, res) => {
-  const stats = streamManager.getStats();
-  res.send(`
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>🎵 Music Streaming Server</title>
-      <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body {
-          font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-          min-height: 100vh;
-          padding: 20px;
-          color: #fff;
-        }
-        .container { max-width: 900px; margin: 0 auto; }
-        .header { text-align: center; margin-bottom: 40px; }
-        .header h1 { font-size: 3em; margin-bottom: 10px; text-shadow: 2px 2px 4px rgba(0,0,0,0.3); }
-        .status-badge {
-          display: inline-block;
-          background: rgba(255,255,255,0.2);
-          padding: 8px 20px;
-          border-radius: 20px;
-          backdrop-filter: blur(10px);
-          font-size: 0.9em;
-        }
-        .pulse {
-          display: inline-block;
-          width: 10px;
-          height: 10px;
-          background: #4ade80;
-          border-radius: 50%;
-          margin-right: 8px;
-          animation: pulse 2s infinite;
-        }
-        @keyframes pulse {
-          0%, 100% { opacity: 1; transform: scale(1); }
-          50% { opacity: 0.5; transform: scale(1.1); }
-        }
-        .card {
-          background: rgba(255, 255, 255, 0.15);
-          backdrop-filter: blur(10px);
-          border-radius: 20px;
-          padding: 30px;
-          margin-bottom: 20px;
-          box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
-          border: 1px solid rgba(255, 255, 255, 0.18);
-        }
-        .now-playing { display: flex; align-items: center; gap: 20px; }
-        .music-icon { font-size: 3em; animation: rotate 3s linear infinite; }
-        @keyframes rotate { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
-        .track-info h2 { font-size: 1.5em; margin-bottom: 5px; }
-        .track-info p { opacity: 0.8; font-size: 0.95em; }
-        .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin-top: 20px; }
-        .stat-box {
-          background: rgba(255, 255, 255, 0.1);
-          padding: 20px;
-          border-radius: 15px;
-          text-align: center;
-        }
-        .stat-box .number { font-size: 2em; font-weight: bold; margin-bottom: 5px; }
-        .stat-box .label { opacity: 0.8; font-size: 0.9em; }
-        .stream-btn {
-          display: inline-block;
-          background: linear-gradient(45deg, #4ade80, #22c55e);
-          color: white;
-          padding: 15px 40px;
-          border-radius: 30px;
-          text-decoration: none;
-          font-weight: bold;
-          margin-top: 20px;
-        }
-        .persistent-badge {
-          background: linear-gradient(45deg, #22c55e, #16a34a);
-          padding: 5px 15px;
-          border-radius: 20px;
-          font-size: 0.8em;
-          margin-left: 10px;
-        }
-      </style>
-    </head>
-    <body>
-      <div class="container">
-        <div class="header">
-          <h1>🎵 Music Streaming Server</h1>
-          <div class="status-badge">
-            <span class="pulse"></span>
-            Server Online
-            <span class="persistent-badge">Persistent Stream</span>
-          </div>
-        </div>
-        
-        <div class="card">
-          <div class="now-playing">
-            <div class="music-icon">💿</div>
-            <div class="track-info">
-              <h2>Now Playing</h2>
-              <p>${currentTitle || 'No track playing'}</p>
-            </div>
-          </div>
-          
-          <div class="stats">
-            <div class="stat-box">
-              <div class="number">${queue.length}</div>
-              <div class="label">Tracks in Queue</div>
-            </div>
-            <div class="stat-box">
-              <div class="number">${stats.activeListeners}</div>
-              <div class="label">Active Listeners</div>
-            </div>
-            <div class="stat-box">
-              <div class="number">${stats.encoderRunning ? '✓' : '✗'}</div>
-              <div class="label">Encoder Status</div>
-            </div>
-          </div>
-          
-          <center>
-            <a href="/stream" class="stream-btn">🎧 Listen Now</a>
-          </center>
-        </div>
-      </div>
-    </body>
-    </html>
-  `);
-});
-
 const ALLOWED_IPC_COMMANDS = new Set([
   'kick', 'teleport', 'say', 'restart', 'roster', 'terminal', 'access',
   'economy', 'mode', 'stats', 'playlists', 'outfits', 'locations',
@@ -4198,23 +4077,6 @@ app.post("/api/restart", async (req, res) => {
   }, 500);
 });
 
-app.post("/restart", (req, res) => {
-  console.log("🔄 RESTART command received");
-  
-  res.send({ 
-    status: "restarting",
-    message: "Music server is restarting...",
-    timestamp: Date.now()
-  });
-  
-  savePlaybackState();
-  saveQueue();
-  
-  setTimeout(() => {
-    process.exit(1);
-  }, 500);
-});
-
 queue = loadQueue();
 const playbackState = loadPlaybackState();
 
@@ -4250,8 +4112,8 @@ const memoryGuardInterval = setInterval(() => {
   const mem = process.memoryUsage();
   const rssMb = (mem.rss / 1024 / 1024).toFixed(1);
   const heapMb = (mem.heapUsed / 1024 / 1024).toFixed(1);
-  // Only trigger GC and cache cleanup if memory is critically high (> 380MB RSS or > 160MB heap)
-  if (mem.rss > 380 * 1024 * 1024 || mem.heapUsed > 160 * 1024 * 1024) {
+  // Only trigger GC and cache cleanup if memory is critically high (> 220MB RSS or > 95MB heap — tuned for 128MB V8 cap)
+  if (mem.rss > 220 * 1024 * 1024 || mem.heapUsed > 95 * 1024 * 1024) {
     console.warn(`⚠️ [MemoryGuard] Critically elevated Node memory: RSS ${rssMb}MB, Heap ${heapMb}MB - running cleanup...`);
     pruneStaleCacheFiles(currentLocalFilePath);
     if (typeof global.gc === 'function') {
