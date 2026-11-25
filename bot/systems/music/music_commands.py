@@ -862,6 +862,7 @@ def register(bot):
             
             bot.max_song_duration = minutes * 60
             save_max_song_duration(bot.max_song_duration)
+            await bot.music.set_max_duration(bot.max_song_duration)
             
             if minutes == 0:
                 msg = f"{Colors.MINT}⏱️ Song limit {Colors.GREEN}disabled\n{Colors.LIGHT_GRAY}Songs of any length allowed"

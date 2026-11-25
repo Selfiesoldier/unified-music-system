@@ -307,6 +307,10 @@ class MusicManager:
             data["wordLimit"] = word_limit
         return await self.make_request("/announcements", "POST", data)
 
+    async def set_max_duration(self, seconds: int) -> Optional[Dict[str, Any]]:
+        """Sync max song duration (seconds, 0 = unlimited) with music controller"""
+        return await self.make_request("/maxduration", "POST", {"maxDurationSeconds": int(seconds)})
+
     async def get_volume(self) -> Optional[Dict[str, Any]]:
         """Get current volume level"""
         return await self.make_request("/volume")

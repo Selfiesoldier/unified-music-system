@@ -1,4 +1,4 @@
-﻿import express from 'express';
+import express from 'express';
 import session from 'express-session';
 import rateLimit from 'express-rate-limit';
 import crypto from 'crypto';
@@ -566,6 +566,7 @@ class RoomState {
     this.queue = [];
     this.currentTrack = null;
     this.isPlaying = false;
+    this.maxDurationSeconds = 0; // 0 = controlled by bot /maxduration
     this.isPreparing = false;
     this.currentVolume = 100;
     this.history = [];
@@ -1882,9 +1883,10 @@ app.all('/play', async (req, res) => {
     } catch (_) {}
   }
 
-  if (metadata && metadata.durationSeconds > 900) {
+  if (room.maxDurationSeconds > 0 && metadata && metadata.durationSeconds > room.maxDurationSeconds) {
+    const mins = Math.round(room.maxDurationSeconds / 60);
     return res.status(400).json({
-      error: `Track "${metadata.title}" is too long (${metadata.duration}). Maximum allowed duration is 15 minutes.`,
+      error: `Track "${metadata.title}" is too long (${metadata.duration}). Maximum allowed duration is ${mins} minutes.`,
       status: 'rejected_too_long'
     });
   }
@@ -1998,9 +2000,10 @@ app.all('/insert', async (req, res) => {
     } catch (_) {}
   }
 
-  if (metadata && metadata.durationSeconds > 900) {
+  if (room.maxDurationSeconds > 0 && metadata && metadata.durationSeconds > room.maxDurationSeconds) {
+    const mins = Math.round(room.maxDurationSeconds / 60);
     return res.status(400).json({
-      error: `Track "${metadata.title}" is too long (${metadata.duration}). Maximum allowed duration is 15 minutes.`,
+      error: `Track "${metadata.title}" is too long (${metadata.duration}). Maximum allowed duration is ${mins} minutes.`,
       status: 'rejected_too_long'
     });
   }
@@ -2200,6 +2203,17 @@ app.get('/api/audio-health', async (req, res) => {
   });
 });
 
+// Set per-room max song duration (seconds; 0 = unlimited)
+app.post('/maxduration', requireAuth, (req, res) => {
+  const room = getRoom(req);
+  const seconds = Number(req.body?.maxDurationSeconds);
+  if (!Number.isFinite(seconds) || seconds < 0) {
+    return res.status(400).json({ error: 'Invalid maxDurationSeconds' });
+  }
+  room.maxDurationSeconds = Math.floor(seconds);
+  res.json({ status: 'ok', room: room.id, maxDurationSeconds: room.maxDurationSeconds });
+});
+
 // Admin Login
 app.post('/api/login', loginLimiter, (req, res) => {
   const { password } = req.body || {};
@@ -2349,8 +2363,9 @@ app.post('/api/bot-command', async (req, res) => {
       const first = results.videos?.[0];
       if (!first) return res.json({ response: 'No song found for that query!' });
 
-      if (first.seconds && first.seconds > 900) {
-        return res.json({ response: `Song is too long (${first.timestamp}). Maximum duration is 15 minutes.`, status: 'rejected_too_long' });
+      if (room.maxDurationSeconds > 0 && first.seconds && first.seconds > room.maxDurationSeconds) {
+        const mins = Math.round(room.maxDurationSeconds / 60);
+        return res.json({ response: `Song is too long (${first.timestamp}). Maximum duration is ${mins} minutes.`, status: 'rejected_too_long' });
       }
 
       // Check duplicate
