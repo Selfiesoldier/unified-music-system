@@ -4,6 +4,7 @@ const vip = require('../systems/VIPManager');
 const movement = require('../systems/MovementManager');
 const tracking = require('../systems/TrackingManager');
 const autoTip = require('../systems/AutoTipManager');
+const favSpotManager = require('../systems/FavSpotManager');
 const profileManager = require('../systems/ProfileManager');
 const autoEmote = require('../systems/AutoEmoteManager');
 const emoteAI = require('../systems/EmoteAIManager');
@@ -71,6 +72,7 @@ module.exports = async function handleJoin(bot, user, position, log) {
     tracking.startSession(user.id, user.username);
     economy.getUser(user.id, user.username);
     autoTip.handleFirstVisit(bot, user);
+    favSpotManager.handleUserJoin(bot, user);
 
     // Initial position cache & dance floor entry check
     if (position && 'x' in position) {
