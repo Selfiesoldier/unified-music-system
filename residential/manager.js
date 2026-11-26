@@ -129,6 +129,10 @@ function startTunnel() {
   cfProcess.stdout.on('data', handleOutput);
   cfProcess.stderr.on('data', handleOutput);
 
+  cfProcess.on('error', (err) => {
+    console.error(`❌ Failed to start cloudflared (${CLOUDFLARED_PATH}): ${err.message}`);
+  });
+
   cfProcess.on('close', (code) => {
     if (isShuttingDown || isRecycling) return;
     console.log(`⚠️ Cloudflare tunnel process exited (code ${code}). Reconnecting in 3 seconds...`);

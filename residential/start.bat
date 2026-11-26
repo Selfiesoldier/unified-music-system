@@ -5,5 +5,5 @@ echo   Highrise Musicbot - Residential Audio Bridge (v2)
 echo ========================================================
 echo.
 
-node server.js
+node manager.js
 pause

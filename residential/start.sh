@@ -36,5 +36,5 @@ if command -v pkg &> /dev/null; then
     fi
 fi
 
-echo "🚀 Starting residential audio bridge on port 8888..."
-node server.js
+echo "🚀 Starting residential audio bridge & Cloudflare tunnel..."
+node manager.js
